@@ -1,5 +1,5 @@
 venv/
 __pycache__/
 .DS_Store
-models/glove*.txt
+glove*.txt
 data/*.csv
