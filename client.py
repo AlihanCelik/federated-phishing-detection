@@ -5,6 +5,7 @@ import pandas as pd
 import flwr as fl
 
 from src.bilstm_model import build_bilstm_model, tokenize_and_pad_texts
+from src.glove_loader import load_glove_embeddings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 class PhishingClient(fl.client.NumPyClient):
@@ -49,7 +50,7 @@ def load_or_generate_data(data_path=None, num_samples=1000):
         texts = df['text'].astype(str).tolist()
         labels = df['label'].astype(int).tolist()
     else:
-        print("Geçerli bir veri seti bulunamadı. Sentetik veriler (Dummy Data) oluşturuluyor...")
+        print("Geçerli bir veri seti bulunamadı.")
         return None, None
         
     return texts, np.array(labels)
@@ -59,6 +60,8 @@ def main():
     parser.add_argument("--client_id", type=int, default=1, help="İstemci Kimliği (ID)")
     parser.add_argument("--malicious", action="store_true", help="Bu istemciyi zehirleme saldırısı için kötü niyetli yap")
     parser.add_argument("--data_path", type=str, default="", help="CSV formatındaki veri setinin yolu")
+    parser.add_argument("--num_clients", type=int, default=3, help="Sistemdeki toplam istemci sayısı")
+    parser.add_argument("--glove_path", type=str, default="glove.6B.100d.txt", help="GloVe kelime vektörleri dosyasının yolu")
     args = parser.parse_args()
 
     print(f"İstemci #{args.client_id} başlatılıyor... (Kötü Niyetli: {args.malicious})")
@@ -66,6 +69,22 @@ def main():
     texts, labels = load_or_generate_data(args.data_path)
     if texts is None or labels is None:
         return
+        
+    # veri setini bölüştür
+    np.random.seed(42) 
+    indices = np.arange(len(texts))
+    np.random.shuffle(indices)
+    
+    texts = [texts[i] for i in indices]
+    labels = labels[indices]
+    
+    chunk_size = len(texts) // args.num_clients
+    start_idx = (args.client_id - 1) * chunk_size
+    end_idx = start_idx + chunk_size if args.client_id != args.num_clients else len(texts)
+    
+    texts = texts[start_idx:end_idx]
+    labels = labels[start_idx:end_idx]
+    print(f"İstemci #{args.client_id} için {len(texts)} örnek ayrıldı (İndeks: {start_idx} - {end_idx}).")
     
     max_words = 5000
     max_length = 50
@@ -76,7 +95,15 @@ def main():
     x_test, y_test = x_padded[split_idx:], labels[split_idx:]
 
     vocab_size = min(max_words, len(word_index) + 1)
-    model = build_bilstm_model(vocab_size=vocab_size, embedding_dim=100, max_length=max_length, embedding_matrix=None)
+    
+    # GloVe Vektörlerini Yükle
+    embedding_matrix = None
+    if os.path.exists(args.glove_path):
+        embedding_matrix = load_glove_embeddings(args.glove_path, word_index, vocab_size, embedding_dim=100)
+    else:
+        print(f"UYARI: GloVe dosyası ({args.glove_path}) bulunamadı. Model kelimeleri sıfırdan öğrenecek.")
+
+    model = build_bilstm_model(vocab_size=vocab_size, embedding_dim=100, max_length=max_length, embedding_matrix=embedding_matrix)
 
     client = PhishingClient(model, x_train, y_train, x_test, y_test, is_malicious=args.malicious)
     

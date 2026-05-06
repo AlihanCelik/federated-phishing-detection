@@ -71,7 +71,7 @@ class CustomRobustStrategy(FedAvg):
             print(f"Seçilen İstemci İndeksleri: {selected_indices}")
 
         elif self.robust_method == "cosine":
-            print(f"\n--- Yuva {server_round}: Kosinüs Benzerliği (Cosine Similarity) Uygulanıyor ---")
+            print(f"\n---Round {server_round}: Kosinüs Benzerliği Uygulanıyor ---")
             # referans vektör olarak tüm güncellemelerin ortalamasını al
             mean_vector = np.mean(flat_weights, axis=0)
             

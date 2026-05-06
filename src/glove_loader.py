@@ -1,7 +1,7 @@
 import numpy as np
 import os
 
-def load_glove_embeddings(glove_path, word_index, embedding_dim=100):
+def load_glove_embeddings(glove_path, word_index, vocab_size, embedding_dim=100):
     """
     GloVe dosyasını yükler ve veri setindeki kelimelere uygun 
     bir embedding matrisi oluşturur.
@@ -23,12 +23,15 @@ def load_glove_embeddings(glove_path, word_index, embedding_dim=100):
     print(f"Toplam {len(embeddings_index)} kelime vektörü GloVe dosyasından okundu.")
 
     # model için ağırlık matrisi
-    embedding_matrix = np.zeros((len(word_index) + 1, embedding_dim))
+    embedding_matrix = np.zeros((vocab_size, embedding_dim))
     
     hits = 0
     misses = 0
 
     for word, i in word_index.items():
+        if i >= vocab_size:
+            continue
+        
         embedding_vector = embeddings_index.get(word)
         if embedding_vector is not None:
             # kelime varsa matrise ekle
