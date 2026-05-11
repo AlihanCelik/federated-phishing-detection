@@ -4,18 +4,33 @@ import numpy as np
 import pandas as pd
 import flwr as fl
 
-from src.bilstm_model import build_bilstm_model, tokenize_and_pad_texts
+from src.bilstm_model import build_bilstm_model
 from src.glove_loader import load_glove_embeddings
+from src.data_preprocessing import (
+    load_global_tokenizer,
+    texts_to_padded,
+    split_data_heterogeneous,
+)
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 
 class PhishingClient(fl.client.NumPyClient):
     def __init__(self, model, x_train, y_train, x_test, y_test, is_malicious=False):
         self.model = model
         self.x_train = x_train
-        self.y_train = y_train
+        self.y_train = y_train.copy()   # orijinal etiketleri koru
         self.x_test = x_test
         self.y_test = y_test
         self.is_malicious = is_malicious
+
+        # Label flipping saldırısı: etiketler yalnızca bir kez çevrilir.
+        # Önceki implementasyonda her fit() çağrısında tekrar uygulanıyordu;
+        # bu, zaten çevrilmiş etiketleri tekrar çevirip saldırıyı etkisiz kılıyordu.
+        if self.is_malicious:
+            print("[KÖTÜ NİYETLİ İSTEMCİ] Label Flipping uygulandı: "
+                  "Tüm oltalama e-postaları (label=1) 'temiz' (label=0) olarak işaretlendi.")
+            self.y_train = np.where(self.y_train == 1, 0, self.y_train)
 
     def get_parameters(self, config):
         return self.model.get_weights()
@@ -24,15 +39,10 @@ class PhishingClient(fl.client.NumPyClient):
         print("\n--- Sunucudan ağırlıklar alındı, yerel eğitim başlıyor ---")
         self.model.set_weights(parameters)
 
-        # label flipping saldırısı
         if self.is_malicious:
-            print("Bu istemci KÖTÜ NİYETLİ olarak yapılandırıldı.")
-            print("         Label Flipping uygulanıyor: Tüm oltalama e-postaları 'temiz' olarak işaretleniyor.")
-            self.y_train = np.where(self.y_train == 1, 0, self.y_train)
+            print("[KÖTÜ NİYETLİ İSTEMCİ] Zehirlenmiş etiketlerle eğitim yapılıyor.")
 
-        # eğitimi başlat
         self.model.fit(self.x_train, self.y_train, epochs=2, batch_size=32, verbose=1)
-        
         return self.model.get_weights(), len(self.x_train), {}
 
     def evaluate(self, parameters, config):
@@ -42,76 +52,104 @@ class PhishingClient(fl.client.NumPyClient):
         return loss, len(self.x_test), {"accuracy": accuracy}
 
 
-def load_or_generate_data(data_path=None, num_samples=1000):
-  
+def load_data(data_path):
+    """CSV'den ham metin ve etiketleri yükler."""
     if data_path and os.path.exists(data_path):
         print(f"Veri '{data_path}' konumundan yükleniyor...")
         df = pd.read_csv(data_path)
         texts = df['text'].astype(str).tolist()
-        labels = df['label'].astype(int).tolist()
+        labels = np.array(df['label'].astype(int).tolist())
     else:
-        print(f"UYARI: '{data_path}' bulunamadı! Simülasyonun çalışabilmesi için {num_samples} adet rastgele (mock) veri üretiliyor...")
-        texts = ["Bu rastgele oluşturulmuş bir test e-postasıdır." if i % 2 == 0 else "Lütfen şifrenizi sıfırlamak için bu oltalama linkine tıklayın!" for i in range(num_samples)]
-        labels = np.array([0 if i % 2 == 0 else 1 for i in range(num_samples)])
-        
-    return texts, np.array(labels)
+        print(f"UYARI: '{data_path}' bulunamadı! Mock veri üretiliyor...")
+        n = 1000
+        texts = [
+            "Dear customer, your account will be suspended urgently click here"
+            if i % 2 == 0
+            else "Meeting scheduled for tomorrow at 10am please confirm attendance"
+            for i in range(n)
+        ]
+        labels = np.array([1 if i % 2 == 0 else 0 for i in range(n)])
+
+    return texts, labels
+
 
 def main():
     parser = argparse.ArgumentParser(description="Federatif Öğrenme İstemcisi (BiLSTM)")
-    parser.add_argument("--client_id", type=int, default=1, help="İstemci Kimliği (ID)")
-    parser.add_argument("--malicious", action="store_true", help="Bu istemciyi zehirleme saldırısı için kötü niyetli yap")
-    parser.add_argument("--data_path", type=str, default="", help="CSV formatındaki veri setinin yolu")
-    parser.add_argument("--num_clients", type=int, default=3, help="Sistemdeki toplam istemci sayısı")
-    parser.add_argument("--glove_path", type=str, default="glove.6B.100d.txt", help="GloVe kelime vektörleri dosyasının yolu")
+    parser.add_argument("--client_id", type=int, default=1, help="İstemci Kimliği (1'den başlar)")
+    parser.add_argument("--malicious", action="store_true", help="Kötü niyetli istemci (label flipping saldırısı)")
+    parser.add_argument("--data_path", type=str, default="email_text.csv", help="CSV veri seti yolu")
+    parser.add_argument("--num_clients", type=int, default=3, help="Toplam istemci sayısı")
+    parser.add_argument("--glove_path", type=str, default="glove.6B.100d.txt", help="GloVe dosyası yolu")
+    parser.add_argument("--tokenizer_path", type=str, default="tokenizer.pkl", help="Global tokenizer dosyası yolu")
+    parser.add_argument("--alpha", type=float, default=0.5,
+                        help="Dirichlet heterojenlik parametresi (küçük=heterojen, büyük=homojen)")
     args = parser.parse_args()
 
+    print(f"\n{'='*60}")
     print(f"İstemci #{args.client_id} başlatılıyor... (Kötü Niyetli: {args.malicious})")
+    print(f"{'='*60}")
 
-    texts, labels = load_or_generate_data(args.data_path)
-    if texts is None or labels is None:
-        return
-        
-    # veri setini bölüştür
-    np.random.seed(42) 
-    indices = np.arange(len(texts))
-    np.random.shuffle(indices)
-    
-    texts = [texts[i] for i in indices]
-    labels = labels[indices]
-    
-    chunk_size = len(texts) // args.num_clients
-    start_idx = (args.client_id - 1) * chunk_size
-    end_idx = start_idx + chunk_size if args.client_id != args.num_clients else len(texts)
-    
-    texts = texts[start_idx:end_idx]
-    labels = labels[start_idx:end_idx]
-    print(f"İstemci #{args.client_id} için {len(texts)} örnek ayrıldı (İndeks: {start_idx} - {end_idx}).")
-    
+    # --- 1. Veriyi yükle ---
+    texts, labels = load_data(args.data_path)
+
+    # --- 2. Heterojen (non-IID) veri bölüşümü ---
+    # Dirichlet dağılımı ile her istemci farklı sınıf dağılımına sahip olur.
+    client_texts, client_labels = split_data_heterogeneous(
+        texts, labels,
+        num_clients=args.num_clients,
+        client_id=args.client_id,
+        alpha=args.alpha,
+        seed=42
+    )
+    print(f"İstemci #{args.client_id}: {len(client_texts)} örnek | "
+          f"Oltalama oranı: %{np.mean(client_labels)*100:.1f}")
+
+    # --- 3. Global tokenizer yükle (tüm istemciler aynı tokenizer'ı kullanır) ---
+    # Bu, farklı istemcilerde aynı kelimenin aynı indekse karşılık gelmesini garantiler.
     max_words = 5000
     max_length = 50
-    x_padded, word_index, _ = tokenize_and_pad_texts(texts, max_words=max_words, max_length=max_length)
-    
+
+    tokenizer = load_global_tokenizer(args.tokenizer_path)
+    word_index = tokenizer.word_index
+
+    x_padded = texts_to_padded(client_texts, tokenizer, max_length=max_length)
+
+    # --- 4. Train/test bölümü ---
     split_idx = int(len(x_padded) * 0.8)
-    x_train, y_train = x_padded[:split_idx], labels[:split_idx]
-    x_test, y_test = x_padded[split_idx:], labels[split_idx:]
+    x_train, y_train = x_padded[:split_idx], client_labels[:split_idx]
+    x_test, y_test = x_padded[split_idx:], client_labels[split_idx:]
 
     vocab_size = min(max_words, len(word_index) + 1)
-    
-    # GloVe Vektörlerini Yükle
+
+    # --- 5. GloVe embedding matrisini yükle ---
     embedding_matrix = None
     if os.path.exists(args.glove_path):
-        embedding_matrix = load_glove_embeddings(args.glove_path, word_index, vocab_size, embedding_dim=100)
+        embedding_matrix = load_glove_embeddings(
+            args.glove_path, word_index, vocab_size, embedding_dim=100
+        )
     else:
-        print(f"UYARI: GloVe dosyası ({args.glove_path}) bulunamadı. Model kelimeleri sıfırdan öğrenecek.")
+        print(f"UYARI: GloVe dosyası ({args.glove_path}) bulunamadı. "
+              "Model kelimeleri sıfırdan öğrenecek.")
 
-    model = build_bilstm_model(vocab_size=vocab_size, embedding_dim=100, max_length=max_length, embedding_matrix=embedding_matrix)
+    # --- 6. Modeli oluştur ---
+    model = build_bilstm_model(
+        vocab_size=vocab_size,
+        embedding_dim=100,
+        max_length=max_length,
+        embedding_matrix=embedding_matrix
+    )
 
-    client = PhishingClient(model, x_train, y_train, x_test, y_test, is_malicious=args.malicious)
-    
+    # --- 7. Flower istemcisini başlat ---
+    client = PhishingClient(
+        model, x_train, y_train, x_test, y_test,
+        is_malicious=args.malicious
+    )
+
     fl.client.start_client(
         server_address="127.0.0.1:8080",
         client=client.to_client()
     )
+
 
 if __name__ == "__main__":
     main()
