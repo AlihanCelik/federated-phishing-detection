@@ -103,14 +103,29 @@ class CustomRobustStrategy(FedAvg):
         # seçilen istemcilerle FedAvg metodunu çağırarak ortalama al
         return super().aggregate_fit(server_round, robust_results, failures)
 
+def weighted_average(metrics: List[Tuple[int, dict]]) -> dict:
+    accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
+    examples = [num_examples for num_examples, _ in metrics]
+    accuracy = sum(accuracies) / sum(examples)
+    print(f"\n--- [SUNUCU] Global Model Başarı Oranı (Accuracy): %{accuracy * 100:.2f} ---\n")
+    return {"accuracy": accuracy}
+
 def main():
-    print("Federatif Öğrenme Sunucusu Başlatılıyor...")
+    import argparse
+    parser = argparse.ArgumentParser(description="Federatif Öğrenme Sunucusu")
+    parser.add_argument("--num_clients", type=int, default=3, help="Toplam istemci sayısı")
+    parser.add_argument("--malicious_fraction", type=float, default=0.3, help="Kötü niyetli istemci oranı")
+    parser.add_argument("--robust_method", type=str, default="cosine", choices=["cosine", "krum"], help="Kullanılacak savunma algoritması (cosine veya krum)")
+    args = parser.parse_args()
+
+    print(f"Federatif Öğrenme Sunucusu Başlatılıyor... (Beklenen İstemci: {args.num_clients}, Algoritma: {args.robust_method})")
     strategy = CustomRobustStrategy(
-        robust_method="cosine", 
-        malicious_fraction=0.3,
-        min_fit_clients=3,
-        min_available_clients=3,
-        min_evaluate_clients=3,
+        robust_method=args.robust_method, 
+        malicious_fraction=args.malicious_fraction,
+        min_fit_clients=args.num_clients,
+        min_available_clients=args.num_clients,
+        min_evaluate_clients=args.num_clients,
+        evaluate_metrics_aggregation_fn=weighted_average
     )
     
     fl.server.start_server(

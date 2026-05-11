@@ -50,8 +50,9 @@ def load_or_generate_data(data_path=None, num_samples=1000):
         texts = df['text'].astype(str).tolist()
         labels = df['label'].astype(int).tolist()
     else:
-        print("Geçerli bir veri seti bulunamadı.")
-        return None, None
+        print(f"UYARI: '{data_path}' bulunamadı! Simülasyonun çalışabilmesi için {num_samples} adet rastgele (mock) veri üretiliyor...")
+        texts = ["Bu rastgele oluşturulmuş bir test e-postasıdır." if i % 2 == 0 else "Lütfen şifrenizi sıfırlamak için bu oltalama linkine tıklayın!" for i in range(num_samples)]
+        labels = np.array([0 if i % 2 == 0 else 1 for i in range(num_samples)])
         
     return texts, np.array(labels)
 
