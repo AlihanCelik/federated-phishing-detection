@@ -45,4 +45,4 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 * Gerekli kütüphaneleri yükleyin:
 ```
 pip install -r requirements.txt
-```
+```# federatifOltalamaTespiti
