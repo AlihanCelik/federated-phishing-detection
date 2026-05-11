@@ -93,6 +93,59 @@ class CustomRobustStrategy(FedAvg):
             selected_indices = np.argsort(similarities)[-num_to_select:].tolist()
             print(f"Seçilen İstemci İndeksleri: {selected_indices}")
             
+        elif self.robust_method == "hybrid":
+            print(f"\n---Round {server_round}: Hibrit (Krum + Kosinüs) Savunma Uygulanıyor ---")
+            
+            # Krum hesaplama
+            distances = np.zeros((num_clients, num_clients))
+            for i in range(num_clients):
+                for j in range(num_clients):
+                    if i != j:
+                        distances[i, j] = np.linalg.norm(flat_weights[i] - flat_weights[j])
+            
+            krum_scores = np.zeros(num_clients)
+            neighbors_to_keep = max(1, num_clients - num_malicious - 2)
+            for i in range(num_clients):
+                sorted_dists = np.sort(distances[i])
+                krum_scores[i] = np.sum(sorted_dists[1:neighbors_to_keep+1])
+            
+            # Krum skorlarını normalize et (Düşük mesafe = yüksek puan, 0-1 arası)
+            min_krum, max_krum = np.min(krum_scores), np.max(krum_scores)
+            if max_krum == min_krum:
+                krum_norm = np.ones(num_clients)
+            else:
+                krum_norm = 1.0 - ((krum_scores - min_krum) / (max_krum - min_krum))
+            
+            # Kosinüs hesaplama
+            mean_vector = np.mean(flat_weights, axis=0)
+            similarities = np.zeros(num_clients)
+            for i in range(num_clients):
+                dot_product = np.dot(flat_weights[i], mean_vector)
+                norm_a = np.linalg.norm(flat_weights[i])
+                norm_b = np.linalg.norm(mean_vector)
+                if norm_a == 0 or norm_b == 0:
+                    similarities[i] = 0
+                else:
+                    similarities[i] = dot_product / (norm_a * norm_b)
+            
+            # Kosinüs skorlarını normalize et (0-1 arası)
+            min_cos, max_cos = np.min(similarities), np.max(similarities)
+            if max_cos == min_cos:
+                cos_norm = np.ones(num_clients)
+            else:
+                cos_norm = (similarities - min_cos) / (max_cos - min_cos)
+            
+            # Hibrit Skor = %50 Krum + %50 Kosinüs
+            hybrid_scores = (0.5 * krum_norm) + (0.5 * cos_norm)
+            
+            print(f"Krum Puanları: {krum_norm}")
+            print(f"Kosinüs Puanları: {cos_norm}")
+            print(f"Hibrit Skorları: {hybrid_scores}")
+            
+            num_to_select = max(1, num_clients - num_malicious)
+            selected_indices = np.argsort(hybrid_scores)[-num_to_select:].tolist()
+            print(f"Seçilen İstemci İndeksleri: {selected_indices}")
+            
         else:
             print(f"Bilinmeyen yöntem: {self.robust_method}. Standart FedAvg uygulanıyor.")
             return super().aggregate_fit(server_round, results, failures)
@@ -112,10 +165,12 @@ def weighted_average(metrics: List[Tuple[int, dict]]) -> dict:
 
 def main():
     import argparse
+    import json
+    
     parser = argparse.ArgumentParser(description="Federatif Öğrenme Sunucusu")
     parser.add_argument("--num_clients", type=int, default=3, help="Toplam istemci sayısı")
     parser.add_argument("--malicious_fraction", type=float, default=0.3, help="Kötü niyetli istemci oranı")
-    parser.add_argument("--robust_method", type=str, default="cosine", choices=["cosine", "krum"], help="Kullanılacak savunma algoritması (cosine veya krum)")
+    parser.add_argument("--robust_method", type=str, default="cosine", choices=["cosine", "krum", "hybrid"], help="Kullanılacak savunma algoritması (cosine, krum veya hybrid)")
     args = parser.parse_args()
 
     print(f"Federatif Öğrenme Sunucusu Başlatılıyor... (Beklenen İstemci: {args.num_clients}, Algoritma: {args.robust_method})")
@@ -128,11 +183,26 @@ def main():
         evaluate_metrics_aggregation_fn=weighted_average
     )
     
-    fl.server.start_server(
+    history = fl.server.start_server(
         server_address="0.0.0.0:8080",
-        config=fl.server.ServerConfig(num_rounds=5),
+        config=fl.server.ServerConfig(num_rounds=20),
         strategy=strategy,
     )
+    import math
+    num_malicious = math.ceil(args.num_clients * args.malicious_fraction)
+    num_normal = args.num_clients - num_malicious
+
+    # Sonuçları kaydet
+    results_data = {
+        "method": args.robust_method,
+        "num_clients": args.num_clients,
+        "num_normal": num_normal,
+        "num_malicious": num_malicious,
+        "losses": history.losses_distributed,
+        "accuracies": history.metrics_distributed.get("accuracy", [])
+    }
+    with open("results.json", "w") as f:
+        json.dump(results_data, f)
 
 if __name__ == "__main__":
     import typing

@@ -7,7 +7,7 @@ def main():
     parser = argparse.ArgumentParser(description="Simülasyon Başlatıcı")
     parser.add_argument("--num_normal", type=int, default=2, help="Normal istemci sayısı")
     parser.add_argument("--num_malicious", type=int, default=1, help="Kötü niyetli istemci sayısı")
-    parser.add_argument("--robust_method", type=str, default="cosine", choices=["cosine", "krum"], help="Kullanılacak savunma algoritması (cosine veya krum)")
+    parser.add_argument("--robust_method", type=str, default="cosine", choices=["cosine", "krum", "hybrid"], help="Kullanılacak savunma algoritması (cosine, krum veya hybrid)")
     args = parser.parse_args()
 
     total_clients = args.num_normal + args.num_malicious
@@ -63,6 +63,9 @@ def main():
         server_process.terminate()
         server_process.wait()
         print("=== Simülasyon Tamamlandı ===")
+        
+        print("Sonuç grafiği hazırlanıyor ve ekranda açılıyor...")
+        subprocess.run([sys.executable, "plot_results.py"])
         
     except KeyboardInterrupt:
         print("Kullanıcı tarafından iptal edildi. Süreçler kapatılıyor...")
