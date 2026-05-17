@@ -172,10 +172,7 @@ class CustomRobustStrategy(FedAvg):
                         np.dot(flat_weights[i], mean_vector) / (norm_a * norm_b)
                     )
 
-            # 1 ekstra güvenlik marjı: num_malicious+1 istemciyi dışla
-            # Bu sayede savunma daha agresif çalışır ve kötü niyetli
-            # istemcilerin seçilme ihtimali azalır.
-            num_to_select = max(1, num_clients - num_malicious - 1)
+            num_to_select = max(1, num_clients - num_malicious)
 
             if krum_feasible:
                 # ── Krum koşulu sağlandı → Hybrid (Krum + Cosine %50/%50) ──
