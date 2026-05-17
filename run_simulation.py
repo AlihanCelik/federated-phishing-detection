@@ -19,7 +19,7 @@ def main():
                         help="Savunma algoritması: cosine | krum | hybrid")
     parser.add_argument("--num_rounds", type=int, default=20,
                         help="Federatif öğrenme tur sayısı")
-    parser.add_argument("--alpha", type=float, default=0.5,
+    parser.add_argument("--alpha", type=float, default=1.0,
                         help="Dirichlet heterojenlik parametresi (küçük=heterojen)")
     parser.add_argument("--data_path", type=str, default="email_text.csv",
                         help="CSV veri seti yolu")

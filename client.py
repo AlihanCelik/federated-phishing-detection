@@ -81,7 +81,7 @@ def main():
     parser.add_argument("--num_clients", type=int, default=3, help="Toplam istemci sayısı")
     parser.add_argument("--glove_path", type=str, default="glove.6B.100d.txt", help="GloVe dosyası yolu")
     parser.add_argument("--tokenizer_path", type=str, default="tokenizer.pkl", help="Global tokenizer dosyası yolu")
-    parser.add_argument("--alpha", type=float, default=0.5,
+    parser.add_argument("--alpha", type=float, default=2.0,
                         help="Dirichlet heterojenlik parametresi (küçük=heterojen, büyük=homojen)")
     args = parser.parse_args()
 

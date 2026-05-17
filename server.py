@@ -142,37 +142,25 @@ class CustomRobustStrategy(FedAvg):
             print(f"  Seçilen İstemci İndeksleri: {selected_indices}")
 
         # ------------------------------------------------------------------ #
-        #  HİBRİT (KRUM + COSİNÜS)                                            #
+        #  HİBRİT (KRUM + COSİNÜS) — Adaptif Savunma                         #
+        #                                                                      #
+        #  Krum güvenlik koşulu sağlanıyorsa → Krum + Cosine Hybrid           #
+        #  Krum güvenlik koşulu bozuluyorsa  → Sadece Cosine                  #
+        #                                                                      #
+        #  Neden? Krum'un garantisi f < (n-2)/2 koşuluna bağlıdır.            #
+        #  Bu koşul bozulunca kötü niyetliler çoğunluğu oluşturur ve          #
+        #  Krum yanlış istemciyi güvenilir seçebilir. Cosine ise eşik          #
+        #  koşuluna bağlı olmadan vektör yönüne bakarak tespit yapar.          #
         # ------------------------------------------------------------------ #
         elif self.robust_method == "hybrid":
-            print(f"\n--- [Round {server_round}] Hibrit Savunma (Krum + Kosinüs) Uygulanıyor ---")
-            check_krum_feasibility(num_clients, num_malicious)
+            krum_feasible = check_krum_feasibility(num_clients, num_malicious)
 
-            # -- Krum hesaplama --
-            distances = np.zeros((num_clients, num_clients))
-            for i in range(num_clients):
-                for j in range(num_clients):
-                    if i != j:
-                        distances[i, j] = np.linalg.norm(
-                            flat_weights[i] - flat_weights[j]
-                        )
-
-            neighbors_to_keep = max(1, num_clients - num_malicious - 2)
-            krum_scores = np.zeros(num_clients)
-            for i in range(num_clients):
-                sorted_dists = np.sort(distances[i])
-                krum_scores[i] = np.sum(sorted_dists[1: neighbors_to_keep + 1])
-
-            # Krum skorlarını normalize et: düşük mesafe → yüksek puan (0-1)
-            min_k, max_k = np.min(krum_scores), np.max(krum_scores)
-            krum_norm = (
-                np.ones(num_clients)
-                if max_k == min_k
-                else 1.0 - (krum_scores - min_k) / (max_k - min_k)
-            )
-
-            # -- Kosinüs hesaplama --
-            mean_vector = np.mean(flat_weights, axis=0)
+            # -- Kosinüs hesaplama (her iki durumda da kullanılır) --
+            # Referans vektör olarak MEDYAN kullanılır.
+            # Ortalama (mean) zehirli vektörlerden etkilenir; medyan ise
+            # aykırı değerlere karşı dayanıklıdır ve daha güvenilir bir
+            # referans noktası sağlar.
+            mean_vector = np.median(flat_weights, axis=0)
             similarities = np.zeros(num_clients)
             for i in range(num_clients):
                 norm_a = np.linalg.norm(flat_weights[i])
@@ -184,30 +172,72 @@ class CustomRobustStrategy(FedAvg):
                         np.dot(flat_weights[i], mean_vector) / (norm_a * norm_b)
                     )
 
-            # Kosinüs skorlarını normalize et (0-1)
-            min_c, max_c = np.min(similarities), np.max(similarities)
-            cos_norm = (
-                np.ones(num_clients)
-                if max_c == min_c
-                else (similarities - min_c) / (max_c - min_c)
-            )
-
-            # Hibrit Skor = %50 Krum + %50 Kosinüs
-            hybrid_scores = 0.5 * krum_norm + 0.5 * cos_norm
-
             num_to_select = max(1, num_clients - num_malicious)
-            selected_indices = np.argsort(hybrid_scores)[-num_to_select:].tolist()
 
-            print(f"  Krum Puanları (norm):       {np.round(krum_norm, 4)}")
-            print(f"  Kosinüs Puanları (norm):    {np.round(cos_norm, 4)}")
-            print(f"  Hibrit Skorları:            {np.round(hybrid_scores, 4)}")
-            print(f"  Seçilen İstemci İndeksleri: {selected_indices}")
+            if krum_feasible:
+                # ── Krum koşulu sağlandı → Hybrid (Krum + Cosine %50/%50) ──
+                print(f"\n--- [Round {server_round}] Hibrit Savunma (Krum + Kosinüs) Uygulanıyor ---")
+
+                # Krum hesaplama
+                distances = np.zeros((num_clients, num_clients))
+                for i in range(num_clients):
+                    for j in range(num_clients):
+                        if i != j:
+                            distances[i, j] = np.linalg.norm(
+                                flat_weights[i] - flat_weights[j]
+                            )
+
+                neighbors_to_keep = max(1, num_clients - num_malicious - 2)
+                krum_scores = np.zeros(num_clients)
+                for i in range(num_clients):
+                    sorted_dists = np.sort(distances[i])
+                    krum_scores[i] = np.sum(sorted_dists[1: neighbors_to_keep + 1])
+
+                # Krum skorlarını normalize et: düşük mesafe → yüksek puan (0-1)
+                min_k, max_k = np.min(krum_scores), np.max(krum_scores)
+                krum_norm = (
+                    np.ones(num_clients)
+                    if max_k == min_k
+                    else 1.0 - (krum_scores - min_k) / (max_k - min_k)
+                )
+
+                # Kosinüs skorlarını normalize et (0-1)
+                min_c, max_c = np.min(similarities), np.max(similarities)
+                cos_norm = (
+                    np.ones(num_clients)
+                    if max_c == min_c
+                    else (similarities - min_c) / (max_c - min_c)
+                )
+
+                # Hibrit Skor = %50 Krum + %50 Kosinüs
+                hybrid_scores = 0.5 * krum_norm + 0.5 * cos_norm
+
+                selected_indices = np.argsort(hybrid_scores)[-num_to_select:].tolist()
+
+                print(f"  Krum Puanları (norm):       {np.round(krum_norm, 4)}")
+                print(f"  Kosinüs Puanları (norm):    {np.round(cos_norm, 4)}")
+                print(f"  Hibrit Skorları:            {np.round(hybrid_scores, 4)}")
+                print(f"  Seçilen İstemci İndeksleri: {selected_indices}")
+
+            else:
+                # ── Krum koşulu BOZULDU → Sadece Cosine ile devam et ──
+                print(f"\n--- [Round {server_round}] [UYARI] Krum eşiği aşıldı! "
+                      f"Adaptif savunma: Sadece Kosinüs Benzerliği kullanılıyor ---")
+
+                selected_indices = np.argsort(similarities)[-num_to_select:].tolist()
+
+                print(f"  Kosinüs Benzerlikleri:      {np.round(similarities, 4)}")
+                print(f"  Seçilen İstemci İndeksleri: {selected_indices}")
 
         else:
             print(f"Bilinmeyen yöntem: {self.robust_method}. Standart FedAvg uygulanıyor.")
             return super().aggregate_fit(server_round, results, failures)
 
         # Yalnızca seçilen istemcilerin sonuçlarıyla FedAvg uygula
+        if not selected_indices:
+            print(f"  [UYARI] Hiç istemci seçilemedi, tüm istemcilerle FedAvg uygulanıyor.")
+            return super().aggregate_fit(server_round, results, failures)
+
         robust_results = [results[i] for i in selected_indices]
         print(f"  [{self.robust_method.upper()}] {len(robust_results)}/{num_clients} "
               f"istemci seçildi, birleştirme yapılıyor.")

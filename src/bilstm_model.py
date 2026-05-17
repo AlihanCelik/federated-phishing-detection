@@ -33,15 +33,17 @@ def build_bilstm_model(vocab_size: int, embedding_dim: int,
 
     # Embedding katmanı
     if embedding_matrix is not None:
-        # GloVe ağırlıkları yüklendi; embedding katmanı donduruldu (trainable=False).
-        # Bu, GloVe'un önceden öğrendiği anlamsal ilişkilerin bozulmasını engeller.
+        # GloVe ağırlıkları başlangıç noktası olarak yüklendi; trainable=True ile
+        # model eğitim sırasında bu vektörleri e-posta diline göre ince ayar yapar.
+        # GloVe genel İngilizce metinlerden öğrenilmiştir; oltalama e-postalarına özgü
+        # "acil", "hesap", "şifre" gibi kelimelerin ağırlıkları eğitimle optimize edilir.
         model.add(Embedding(
             input_dim=vocab_size,
             output_dim=embedding_dim,
             weights=[embedding_matrix],
             input_length=max_length,
-            trainable=False,
-            name="glove_embedding"
+            trainable=True,
+            name="glove_embedding_finetune"
         ))
     else:
         # GloVe yoksa embedding sıfırdan öğrenilir
