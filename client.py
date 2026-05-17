@@ -16,37 +16,59 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 
 class PhishingClient(fl.client.NumPyClient):
-    def __init__(self, model, x_train, y_train, x_test, y_test, is_malicious=False):
+    def __init__(self, model, x_train, y_train, x_test, y_test,
+                 is_malicious=False, client_id=0):
         self.model = model
         self.x_train = x_train
-        self.y_train = y_train.copy()   # orijinal etiketleri koru
-        self.x_test = x_test
-        self.y_test = y_test
+        self.y_train = y_train.copy()
+        self.x_test  = x_test
+        self.y_test  = y_test.copy()   # test seti HİÇBİR ZAMAN flip edilmez
         self.is_malicious = is_malicious
+        self.client_id = client_id
 
-        # Label flipping saldırısı: etiketler yalnızca bir kez çevrilir.
-        # Önceki implementasyonda her fit() çağrısında tekrar uygulanıyordu;
-        # bu, zaten çevrilmiş etiketleri tekrar çevirip saldırıyı etkisiz kılıyordu.
+        # Kaç örneğin flip edildiğini kaydet — sunucuya metadata olarak gönderilir
+        self.flipped_count = 0
+        self.total_train   = len(self.y_train)
+
         if self.is_malicious:
-            print("[KÖTÜ NİYETLİ İSTEMCİ] Label Flipping uygulandı: "
-                  "Tüm oltalama e-postaları (label=1) 'temiz' (label=0) olarak işaretlendi.")
+            # Sadece label=1 (phishing) örnekleri 0'a çevrilir
+            original = self.y_train.copy()
             self.y_train = np.where(self.y_train == 1, 0, self.y_train)
+            self.flipped_count = int(np.sum(original == 1))
+            print(
+                f"[KÖTÜ NİYETLİ İSTEMCİ #{self.client_id}] Label Flipping uygulandı: "
+                f"{self.flipped_count}/{self.total_train} örnek flip edildi "
+                f"(%{self.flipped_count/max(self.total_train,1)*100:.1f})"
+            )
 
     def get_parameters(self, config):
         return self.model.get_weights()
 
     def fit(self, parameters, config):
-        print("\n--- Sunucudan ağırlıklar alındı, yerel eğitim başlıyor ---")
+        print(f"\n--- [İstemci #{self.client_id}] Sunucudan ağırlıklar alındı, eğitim başlıyor ---")
         self.model.set_weights(parameters)
 
         if self.is_malicious:
-            print("[KÖTÜ NİYETLİ İSTEMCİ] Zehirlenmiş etiketlerle eğitim yapılıyor.")
+            print(f"[KÖTÜ NİYETLİ #{self.client_id}] Zehirlenmiş etiketlerle eğitim yapılıyor "
+                  f"({self.flipped_count} flip'li örnek).")
 
         self.model.fit(self.x_train, self.y_train, epochs=2, batch_size=32, verbose=1)
-        return self.model.get_weights(), len(self.x_train), {}
+
+        # Sunucuya gönderilen metadata:
+        #   is_malicious  → sunucu bu bilgiyi doğrulama için kullanır (gerçekte bilinmez,
+        #                   burada tespit başarısını ölçmek için simülasyon amaçlı gönderilir)
+        #   flipped_count → kaç örnek zehirlendi
+        #   total_train   → toplam eğitim örneği
+        metrics = {
+            "is_malicious":  int(self.is_malicious),
+            "flipped_count": self.flipped_count,
+            "total_train":   self.total_train,
+            "client_id":     self.client_id,
+        }
+        return self.model.get_weights(), len(self.x_train), metrics
 
     def evaluate(self, parameters, config):
-        print("\n--- Değerlendirme başlıyor ---")
+        print(f"\n--- [İstemci #{self.client_id}] Değerlendirme başlıyor ---")
         self.model.set_weights(parameters)
         loss, accuracy = self.model.evaluate(self.x_test, self.y_test, verbose=0)
         return loss, len(self.x_test), {"accuracy": accuracy}
@@ -142,7 +164,8 @@ def main():
     # --- 7. Flower istemcisini başlat ---
     client = PhishingClient(
         model, x_train, y_train, x_test, y_test,
-        is_malicious=args.malicious
+        is_malicious=args.malicious,
+        client_id=args.client_id,
     )
 
     fl.client.start_client(

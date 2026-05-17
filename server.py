@@ -54,6 +54,23 @@ class CustomRobustStrategy(FedAvg):
         self.robust_method = robust_method
         self.malicious_fraction = malicious_fraction
 
+        # ---- Label Flipping Tespit İstatistikleri ----
+        # Her round'da istemcilerden gelen metadata toplanır.
+        # Simülasyonda istemci kendi is_malicious bilgisini gönderir;
+        # bu sayede savunmanın gerçek kötü niyetlileri kaç roundda
+        # doğru elediği ölçülebilir.
+        self.detection_stats = {
+            # flipped_count istemci başlatılırken bir kez hesaplanır.
+            # Sunucu ilk round'da bu değeri alır ve sabit tutar — her round
+            # tekrar toplamaz. Böylece "20 round × 279 flip = 5580" hatası olmaz.
+            "total_flipped_samples":       0,   # kötü niyetli istemci başına flip sayısı (sabit)
+            "flipped_samples_recorded":    False,# ilk round'da bir kez kaydedildi mi
+            "total_malicious_rounds":      0,   # kötü niyetli istemcinin katıldığı round sayısı
+            "correctly_excluded_rounds":   0,   # kötü niyetlinin doğru elendi round sayısı
+            "incorrectly_included_rounds": 0,   # kötü niyetlinin yanlışlıkla seçildi round sayısı
+            "per_round": [],                    # round bazlı detay
+        }
+
     def aggregate_fit(
         self,
         server_round: int,
@@ -172,16 +189,17 @@ class CustomRobustStrategy(FedAvg):
             )
 
             # -- Kosinüs hesaplama --
-            mean_vector = np.mean(flat_weights, axis=0)
+            # Medyan vektör: ortalamaya göre aykırı değerlere daha dayanıklı
+            median_vector = np.median(flat_weights, axis=0)
             similarities = np.zeros(num_clients)
             for i in range(num_clients):
                 norm_a = np.linalg.norm(flat_weights[i])
-                norm_b = np.linalg.norm(mean_vector)
+                norm_b = np.linalg.norm(median_vector)
                 if norm_a == 0 or norm_b == 0:
                     similarities[i] = 0.0
                 else:
                     similarities[i] = (
-                        np.dot(flat_weights[i], mean_vector) / (norm_a * norm_b)
+                        np.dot(flat_weights[i], median_vector) / (norm_a * norm_b)
                     )
 
             # Kosinüs skorlarını normalize et (0-1)
@@ -195,17 +213,79 @@ class CustomRobustStrategy(FedAvg):
             # Hibrit Skor = %50 Krum + %50 Kosinüs
             hybrid_scores = 0.5 * krum_norm + 0.5 * cos_norm
 
+            # Eleme: en düşük hibrit skorlu num_malicious istemciyi çıkar.
+            # Eğer en düşük skor, ortalamanın 1.5 std altındaysa kesin anomali say.
             num_to_select = max(1, num_clients - num_malicious)
-            selected_indices = np.argsort(hybrid_scores)[-num_to_select:].tolist()
+            score_mean = np.mean(hybrid_scores)
+            score_std  = np.std(hybrid_scores)
+            anomaly_threshold = score_mean - 1.5 * score_std
+
+            # Önce anomali eşiğinin altındakileri çıkar
+            forced_out = [i for i in range(num_clients)
+                          if hybrid_scores[i] < anomaly_threshold]
+            # Kalan slotları en yüksek skorlularla doldur
+            remaining = [i for i in range(num_clients) if i not in forced_out]
+            remaining_sorted = sorted(remaining,
+                                      key=lambda i: hybrid_scores[i], reverse=True)
+            selected_indices = remaining_sorted[:num_to_select]
 
             print(f"  Krum Puanları (norm):       {np.round(krum_norm, 4)}")
             print(f"  Kosinüs Puanları (norm):    {np.round(cos_norm, 4)}")
             print(f"  Hibrit Skorları:            {np.round(hybrid_scores, 4)}")
+            print(f"  Anomali eşiği (mean-1.5σ):  {anomaly_threshold:.4f}")
+            print(f"  Zorla elinen indeksler:     {forced_out}")
             print(f"  Seçilen İstemci İndeksleri: {selected_indices}")
 
         else:
             print(f"Bilinmeyen yöntem: {self.robust_method}. Standart FedAvg uygulanıyor.")
             return super().aggregate_fit(server_round, results, failures)
+
+        # ------------------------------------------------------------------ #
+        #  Tespit İstatistiklerini Güncelle                                    #
+        # ------------------------------------------------------------------ #
+        # İstemcilerden gelen metadata'yı oku
+        round_detail = {
+            "round": server_round,
+            "num_clients": num_clients,
+            "selected_indices": list(selected_indices),
+            "excluded_indices": [i for i in range(num_clients) if i not in selected_indices],
+            "malicious_indices": [],       # gerçek kötü niyetli indeksler
+            "correctly_excluded": [],      # doğru elenen kötü niyetliler
+            "incorrectly_included": [],    # yanlış seçilen kötü niyetliler
+            "flipped_samples_this_round": 0,
+        }
+
+        for idx, (_, fit_res) in enumerate(results):
+            m = fit_res.metrics if fit_res.metrics else {}
+            is_mal    = bool(m.get("is_malicious", 0))
+            flipped   = int(m.get("flipped_count", 0))
+            client_id = int(m.get("client_id", idx))
+
+            if is_mal:
+                round_detail["malicious_indices"].append(idx)
+                round_detail["flipped_samples_this_round"] = flipped
+
+                # flip sayısını SADECE ilk round'da kaydet (sabit değer, her round aynı)
+                if not self.detection_stats["flipped_samples_recorded"]:
+                    self.detection_stats["total_flipped_samples"] = flipped
+                    self.detection_stats["flipped_samples_recorded"] = True
+
+                self.detection_stats["total_malicious_rounds"] += 1
+
+                if idx not in selected_indices:
+                    round_detail["correctly_excluded"].append(idx)
+                    self.detection_stats["correctly_excluded_rounds"] += 1
+                    print(f"  [✓ TESPİT] İstemci #{client_id} (indeks {idx}) "
+                          f"kötü niyetli olarak doğru elendi. "
+                          f"({flipped} flip'li örnek engellendi)")
+                else:
+                    round_detail["incorrectly_included"].append(idx)
+                    self.detection_stats["incorrectly_included_rounds"] += 1
+                    print(f"  [✗ KAÇIRDI] İstemci #{client_id} (indeks {idx}) "
+                          f"kötü niyetli ama seçildi! "
+                          f"({flipped} flip'li örnek modele karıştı)")
+
+        self.detection_stats["per_round"].append(round_detail)
 
         # Yalnızca seçilen istemcilerin sonuçlarıyla FedAvg uygula
         robust_results = [results[i] for i in selected_indices]
@@ -266,6 +346,13 @@ def main():
     )
 
     # Sonuçları kaydet
+    total_mal_rounds   = strategy.detection_stats["total_malicious_rounds"]
+    correctly_excluded = strategy.detection_stats["correctly_excluded_rounds"]
+    detection_rate     = (
+        correctly_excluded / total_mal_rounds * 100
+        if total_mal_rounds > 0 else 0.0
+    )
+
     results_data = {
         "method": args.robust_method,
         "num_clients": args.num_clients,
@@ -274,11 +361,29 @@ def main():
         "num_rounds": args.num_rounds,
         "losses": history.losses_distributed,
         "accuracies": history.metrics_distributed.get("accuracy", []),
+        # ---- Label Flipping Tespit İstatistikleri ----
+        "label_flipping": {
+            "total_flipped_samples":       strategy.detection_stats["total_flipped_samples"],
+            "total_malicious_rounds":      total_mal_rounds,
+            "correctly_excluded_rounds":   correctly_excluded,
+            "incorrectly_included_rounds": strategy.detection_stats["incorrectly_included_rounds"],
+            "detection_rate_pct":          round(detection_rate, 2),
+            "per_round":                   strategy.detection_stats["per_round"],
+        },
     }
     with open("results.json", "w") as f:
         json.dump(results_data, f, indent=2)
 
     print("\nSonuçlar 'results.json' dosyasına kaydedildi.")
+    print(f"\n{'='*60}")
+    print(f"  Label Flipping Tespit Özeti")
+    print(f"{'='*60}")
+    print(f"  Toplam flip'li örnek (tüm roundlar) : {strategy.detection_stats['total_flipped_samples']}")
+    print(f"  Kötü niyetli katılım (round sayısı) : {total_mal_rounds}")
+    print(f"  Doğru eleme sayısı                  : {correctly_excluded}")
+    print(f"  Yanlış seçim sayısı                 : {strategy.detection_stats['incorrectly_included_rounds']}")
+    print(f"  Tespit Başarı Oranı                 : %{detection_rate:.2f}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
