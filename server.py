@@ -39,11 +39,12 @@ class CustomRobustStrategy(FedAvg):
     """
     Bizans Toleranslı Federatif Öğrenme Stratejisi.
 
-    Standart FedAvg'ın üzerine inşa edilmiş dört savunma yöntemi sunar:
-    - krum:    Öklid uzaklığına dayalı anomali tespiti (Blanchard et al., 2017)
-    - cosine:  Kosinüs benzerliğine dayalı yön anomalisi tespiti
-    - hybrid:  Krum + Kosinüs skorlarının ağırlıklı ortalaması + EMA itibar takibi
-    - fltrust: Sunucu referans gradyanına dayalı güven skoru (Cao et al., 2021)
+    Standart FedAvg'ın üzerine inşa edilmiş beş savunma yöntemi sunar:
+    - krum:     Öklid uzaklığına dayalı anomali tespiti (Blanchard et al., 2017)
+    - cosine:   Kosinüs benzerliğine dayalı yön anomalisi tespiti
+    - hybrid:   Krum + Kosinüs skorlarının ağırlıklı ortalaması + EMA itibar takibi
+    - fltrust:  Sunucu referans gradyanına dayalı güven skoru (Wang et al., 2021)
+    - ensemble: Krum + Kosinüs + FLTrust + EMA'nın tamamını birleştirir (en güçlü)
 
     Her yöntem, çoğunluktan sapan (zehirli) gradyanları dışlayarak
     yalnızca güvenilir istemcilerin güncellemelerini birleştirir.
@@ -318,19 +319,18 @@ class CustomRobustStrategy(FedAvg):
             return aggregated_parameters, {}
 
         # ------------------------------------------------------------------ #
-        #  HİBRİT (KRUM + COSİNÜS + EMA HAFIZA)                              #
+        #  HİBRİT (KRUM + COSİNÜS + FLTRUST + EMA)                           #
         # ------------------------------------------------------------------ #
         elif self.robust_method == "hybrid":
-            print(f"\n--- [Round {server_round}] Hibrit Savunma (Krum + Kosinüs + EMA) Uygulanıyor ---")
+            print(f"\n--- [Round {server_round}] Hibrit Savunma (Krum + Kosinüs + FLTrust + EMA) Uygulanıyor ---")
             check_krum_feasibility(num_clients, num_malicious)
 
-            # Bu round'daki her results[i] için client_id'yi al
             round_client_ids = []
             for _, fit_res in results:
                 m = fit_res.metrics if fit_res.metrics else {}
                 round_client_ids.append(int(m.get("client_id", -1)))
 
-            # -- Krum hesaplama --
+            # -- 1. Krum skoru --
             distances = np.zeros((num_clients, num_clients))
             for i in range(num_clients):
                 for j in range(num_clients):
@@ -338,21 +338,18 @@ class CustomRobustStrategy(FedAvg):
                         distances[i, j] = np.linalg.norm(
                             flat_weights[i] - flat_weights[j]
                         )
-
             neighbors_to_keep = max(1, num_clients - num_malicious - 2)
             krum_scores = np.zeros(num_clients)
             for i in range(num_clients):
                 sorted_dists = np.sort(distances[i])
                 krum_scores[i] = np.sum(sorted_dists[1: neighbors_to_keep + 1])
-
             min_k, max_k = np.min(krum_scores), np.max(krum_scores)
             krum_norm = (
-                np.ones(num_clients)
-                if max_k == min_k
+                np.ones(num_clients) if max_k == min_k
                 else 1.0 - (krum_scores - min_k) / (max_k - min_k)
             )
 
-            # -- Kosinüs hesaplama (medyan referans) --
+            # -- 2. Kosinüs skoru (medyan referans) --
             median_delta = np.median(deltas, axis=0)
             similarities = np.zeros(num_clients)
             for i in range(num_clients):
@@ -361,21 +358,59 @@ class CustomRobustStrategy(FedAvg):
                 if norm_a == 0 or norm_b == 0:
                     similarities[i] = 0.0
                 else:
-                    similarities[i] = (
-                        np.dot(deltas[i], median_delta) / (norm_a * norm_b)
-                    )
-
+                    similarities[i] = np.dot(deltas[i], median_delta) / (norm_a * norm_b)
             min_c, max_c = np.min(similarities), np.max(similarities)
             cos_norm = (
-                np.ones(num_clients)
-                if max_c == min_c
+                np.ones(num_clients) if max_c == min_c
                 else (similarities - min_c) / (max_c - min_c)
             )
 
-            # -- Anlık birleşik skor: Krum %40 + Kosinüs %60 --
-            instant_scores = 0.40 * krum_norm + 0.60 * cos_norm
+            # -- 3. FLTrust skoru (sunucu referans gradyanı) --
+            # Sunucu kendi temiz verisiyle "doğru yön"ü hesaplar.
+            # İstemci güncellemeleri bu referansla karşılaştırılır.
+            # Sunucu modeli/verisi yoksa nötr skor (0.5) atanır → ağırlıklandırmaya etkisi sınırlı.
+            fltrust_norm = np.ones(num_clients) * 0.5
+            if self.server_model is not None and self.server_data is not None:
+                ref_weights = self.global_weights if self.global_weights is not None else client_weights[0]
+                old_flat = flatten_weights(ref_weights)
+                x_server, y_server = self.server_data
 
-            # -- EMA güncelle --
+                if len(self.server_model.weights) == 0:
+                    dummy = np.zeros((1, x_server.shape[1]), dtype=np.int32)
+                    self.server_model(dummy, training=False)
+
+                self.server_model.set_weights(ref_weights)
+                self.server_model.fit(x_server, y_server, epochs=1, batch_size=32, verbose=0)
+                new_flat = flatten_weights(self.server_model.get_weights())
+                server_delta = new_flat - old_flat
+                server_norm  = np.linalg.norm(server_delta)
+
+                if server_norm > 0:
+                    raw_ts = np.zeros(num_clients)
+                    for i in range(num_clients):
+                        cn = np.linalg.norm(deltas[i])
+                        if cn > 0:
+                            raw_ts[i] = max(0.0, float(
+                                np.dot(deltas[i], server_delta) / (cn * server_norm)
+                            ))
+                    min_ts, max_ts = np.min(raw_ts), np.max(raw_ts)
+                    fltrust_norm = (
+                        np.ones(num_clients) * 0.5 if max_ts == min_ts
+                        else (raw_ts - min_ts) / (max_ts - min_ts)
+                    )
+                    print(f"  FLTrust Ham TS:             {np.round(raw_ts, 4)}")
+                    print(f"  FLTrust Norm:               {np.round(fltrust_norm, 4)}")
+                else:
+                    print("  [UYARI] Sunucu referans deltası sıfır, FLTrust nötr skora düşüldü.")
+            else:
+                print("  [BİLGİ] Sunucu modeli/verisi yok, FLTrust bileşeni nötr (0.5).")
+
+            # -- 4. Anlık hibrit skor: Krum %25 + Kosinüs %35 + FLTrust %40 --
+            # FLTrust en güvenilir sinyal (sunucu referansı) → en yüksek ağırlık.
+            # Sunucu verisi yoksa Krum+Kosinüs ağırlıkları devreye girer.
+            instant_scores = 0.25 * krum_norm + 0.35 * cos_norm + 0.40 * fltrust_norm
+
+            # -- 5. EMA güncelle --
             for i, cid in enumerate(round_client_ids):
                 if cid not in self.client_ema:
                     self.client_ema[cid] = instant_scores[i]
@@ -387,7 +422,7 @@ class CustomRobustStrategy(FedAvg):
                     )
                     self.client_round_count[cid] += 1
 
-            # -- Birleşik sıralama skoru --
+            # -- 6. Birleşik sıralama skoru --
             # İlk 3 round'da anlık skora güven (EMA henüz olgunlaşmadı),
             # sonrasında EMA ağırlığını artır.
             num_to_select = max(1, num_clients - num_malicious)
@@ -400,11 +435,9 @@ class CustomRobustStrategy(FedAvg):
                 else:
                     combined[i] = 0.30 * instant_scores[i] + 0.70 * ema_val
 
-            # En yüksek num_to_select istemciyi seç (saf sıralama, eşik yok)
             selected_indices = np.argsort(combined)[-num_to_select:].tolist()
             forced_out = [i for i in range(num_clients) if i not in selected_indices]
 
-            # Global momentumu bir sonraki round için sakla
             self.prev_global_delta = median_delta.copy()
 
             ema_display = {
@@ -421,10 +454,7 @@ class CustomRobustStrategy(FedAvg):
 
         else:
             print(f"Bilinmeyen yöntem: {self.robust_method}. Standart FedAvg uygulanıyor.")
-            return super().aggregate_fit(server_round, results, failures)
-
-        # ------------------------------------------------------------------ #
-        #  Tespit İstatistiklerini Güncelle                                    #
+            return super().aggregate_fit(server_round, results, failures)                                    #
         # ------------------------------------------------------------------ #
         # İstemcilerden gelen metadata'yı oku.
         # ÖNEMLİ: results listesindeki sıra (idx) her round'da değişebilir
@@ -559,7 +589,7 @@ def main():
     server_model = None
     server_data = None
     
-    if args.robust_method == "fltrust":
+    if args.robust_method in ("fltrust", "hybrid"):
         print("[FLTrust] Sunucu temiz veri seti hazırlanıyor...")
         
         # Veriyi yükle
