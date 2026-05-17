@@ -116,12 +116,16 @@ class CustomRobustStrategy(FedAvg):
             median_w = np.median(flat_weights, axis=0)
             deltas = np.array([w - median_w for w in flat_weights])
 
-        # Gradyan norm kırpma: Her istemcinin delta normunu medyan norma kırp.
-        # Saldırgan büyük normlu gradyanla çoğunluğa "yakın" görünebilir.
-        # Norm kırpma, tüm deltaları eşit büyüklüğe getirip sadece YÖN farkına
-        # odaklanmamızı sağlar.
-        delta_norms = np.array([np.linalg.norm(d) for d in deltas])
-        median_norm = np.median(delta_norms)
+        # ── Ham (kırpılmamış) deltaları tespit için sakla ──
+        # Norm kırpma, saldırganın büyük norm + ters yön sinyalini yok eder.
+        # Tespit algoritmalarının asıl sinyali görebilmesi için raw delta'lar korunur.
+        # Kırpılmış deltalar yalnızca son aggregation adımında kullanılır.
+        raw_deltas = deltas.copy()
+        raw_delta_norms = np.array([np.linalg.norm(d) for d in raw_deltas])
+        median_norm = np.median(raw_delta_norms)
+
+        # Gradyan norm kırpma (aggregation için — tespit için DEĞİL)
+        delta_norms = raw_delta_norms.copy()
         if median_norm > 0:
             for i in range(len(deltas)):
                 if delta_norms[i] > median_norm:
@@ -141,13 +145,15 @@ class CustomRobustStrategy(FedAvg):
             print(f"\n--- [Round {server_round}] Krum Algoritması Uygulanıyor ---")
             check_krum_feasibility(num_clients, num_malicious)
 
-            # Her istemci çifti arasındaki Öklid uzaklığını hesapla
+            # Her istemci çifti arasındaki Öklid uzaklığını hesapla (delta bazlı)
+            # Ham ağırlıklar yerine delta vektörleri kullanılır çünkü
+            # label flipping saldırganı ters yönde güncelleme gönderir.
             distances = np.zeros((num_clients, num_clients))
             for i in range(num_clients):
                 for j in range(num_clients):
                     if i != j:
                         distances[i, j] = np.linalg.norm(
-                            flat_weights[i] - flat_weights[j]
+                            deltas[i] - deltas[j]
                         )
 
             # Krum skoru: her düğüm için en yakın (n - f - 2) komşunun uzaklık toplamı
@@ -319,10 +325,11 @@ class CustomRobustStrategy(FedAvg):
             return aggregated_parameters, {}
 
         # ------------------------------------------------------------------ #
-        #  HİBRİT (KRUM + COSİNÜS + FLTRUST + EMA)                           #
+        #  HİBRİT (KRUM + COSİNÜS + EMA)                                     #
+        #  Label Flipping Tespiti İçin Optimize Edilmiş Versiyon              #
         # ------------------------------------------------------------------ #
         elif self.robust_method == "hybrid":
-            print(f"\n--- [Round {server_round}] Hibrit Savunma (Krum + Kosinüs + FLTrust + EMA) Uygulanıyor ---")
+            print(f"\n--- [Round {server_round}] Hibrit Savunma (Krum + Kosinüs + EMA) Uygulanıyor ---")
             check_krum_feasibility(num_clients, num_malicious)
 
             round_client_ids = []
@@ -330,91 +337,137 @@ class CustomRobustStrategy(FedAvg):
                 m = fit_res.metrics if fit_res.metrics else {}
                 round_client_ids.append(int(m.get("client_id", -1)))
 
-            # -- 1. Krum skoru --
+            # ============================================================
+            # SINYAL 1: Krum skoru (raw delta üzerinden)
+            # ============================================================
             distances = np.zeros((num_clients, num_clients))
             for i in range(num_clients):
                 for j in range(num_clients):
                     if i != j:
-                        distances[i, j] = np.linalg.norm(
-                            flat_weights[i] - flat_weights[j]
-                        )
+                        distances[i, j] = np.linalg.norm(raw_deltas[i] - raw_deltas[j])
             neighbors_to_keep = max(1, num_clients - num_malicious - 2)
             krum_scores = np.zeros(num_clients)
             for i in range(num_clients):
                 sorted_dists = np.sort(distances[i])
                 krum_scores[i] = np.sum(sorted_dists[1: neighbors_to_keep + 1])
-            min_k, max_k = np.min(krum_scores), np.max(krum_scores)
-            krum_norm = (
-                np.ones(num_clients) if max_k == min_k
-                else 1.0 - (krum_scores - min_k) / (max_k - min_k)
-            )
 
-            # -- 2. Kosinüs skoru (medyan referans) --
-            median_delta = np.median(deltas, axis=0)
-            similarities = np.zeros(num_clients)
+            # ============================================================
+            # SINYAL 2: Çiftler-arası (pairwise) kosinüs benzerliği
+            # Her istemcinin diğer tüm istemcilerle medyan kosinüs benzerliği.
+            # Saldırgan HERKESten farklı yönde → medyan pairwise cos düşük.
+            # Trimmed mean gibi tek referansa bağımlı değil, daha sağlam.
+            # ============================================================
+            pairwise_cos = np.zeros((num_clients, num_clients))
             for i in range(num_clients):
-                norm_a = np.linalg.norm(deltas[i])
-                norm_b = np.linalg.norm(median_delta)
-                if norm_a == 0 or norm_b == 0:
-                    similarities[i] = 0.0
-                else:
-                    similarities[i] = np.dot(deltas[i], median_delta) / (norm_a * norm_b)
-            min_c, max_c = np.min(similarities), np.max(similarities)
-            cos_norm = (
-                np.ones(num_clients) if max_c == min_c
-                else (similarities - min_c) / (max_c - min_c)
-            )
+                for j in range(num_clients):
+                    if i != j:
+                        ni = raw_delta_norms[i]
+                        nj = raw_delta_norms[j]
+                        if ni > 0 and nj > 0:
+                            pairwise_cos[i, j] = np.dot(raw_deltas[i], raw_deltas[j]) / (ni * nj)
+            # Her istemci için medyan pairwise kosinüs
+            median_pairwise = np.zeros(num_clients)
+            for i in range(num_clients):
+                others = [pairwise_cos[i, j] for j in range(num_clients) if j != i]
+                median_pairwise[i] = np.median(others)
 
-            # -- 3. FLTrust skoru (sunucu referans gradyanı) --
+            # ============================================================
+            # SINYAL 3: FLTrust (sunucu referansı — varsa)
             # Sunucu kendi temiz verisiyle "doğru yön"ü hesaplar.
-            # İstemci güncellemeleri bu referansla karşılaştırılır.
-            # Sunucu modeli/verisi yoksa nötr skor (0.5) atanır → ağırlıklandırmaya etkisi sınırlı.
-            fltrust_norm = np.ones(num_clients) * 0.5
+            # ============================================================
+            fltrust_scores = np.ones(num_clients) * 0.5  # varsayılan nötr
             if self.server_model is not None and self.server_data is not None:
-                # Global ağırlıkları referans al — istemci ağırlıkları değil
                 ref_weights = self.global_weights if self.global_weights is not None else client_weights[0]
                 old_flat = flatten_weights(ref_weights)
                 x_server, y_server = self.server_data
-
                 if len(self.server_model.weights) == 0:
                     dummy = np.zeros((1, x_server.shape[1]), dtype=np.int32)
                     self.server_model(dummy, training=False)
-
                 self.server_model.set_weights(ref_weights)
                 self.server_model.fit(x_server, y_server, epochs=1, batch_size=32, verbose=0)
                 new_flat = flatten_weights(self.server_model.get_weights())
                 server_delta = new_flat - old_flat
-                server_norm  = np.linalg.norm(server_delta)
-
+                server_norm = np.linalg.norm(server_delta)
                 if server_norm > 0:
-                    # ReLU(cos) — negatif kosinüs = ters yön = saldırgan → 0
-                    raw_ts = np.zeros(num_clients)
                     for i in range(num_clients):
-                        cn = np.linalg.norm(deltas[i])
+                        cn = raw_delta_norms[i]
                         if cn > 0:
-                            raw_ts[i] = max(0.0, float(
-                                np.dot(deltas[i], server_delta) / (cn * server_norm)
+                            fltrust_scores[i] = max(0.0, float(
+                                np.dot(raw_deltas[i], server_delta) / (cn * server_norm)
                             ))
+                    print(f"  FLTrust Skorları:           {np.round(fltrust_scores, 4)}")
 
-                    # Normalizasyon: max değere böl (min-max değil)
-                    # Min-max normalizasyonu sıfır TS alan istemciyi yükseltebilir.
-                    # Max'a bölme sıfırı sıfır bırakır, sıralama korunur.
-                    max_ts = np.max(raw_ts)
-                    fltrust_norm = raw_ts / max_ts if max_ts > 0 else np.ones(num_clients) * 0.5
+            # ============================================================
+            # SKOR BİRLEŞTİRME: Sıralama (rank) bazlı füzyon
+            # Her sinyal için istemcileri sırala, sıra numaralarını topla.
+            # Bu yöntem ölçek farklarından etkilenmez ve her sinyalin
+            # eşit oy hakkı olmasını sağlar.
+            # ============================================================
+            def to_ranks(scores, higher_is_better=True):
+                """Skorları sıralama numarasına çevir (0=en kötü)."""
+                order = np.argsort(scores)
+                ranks = np.zeros(len(scores))
+                for rank, idx in enumerate(order):
+                    ranks[idx] = rank if higher_is_better else (len(scores) - 1 - rank)
+                return ranks
 
-                    print(f"  FLTrust Ham TS:             {np.round(raw_ts, 4)}")
-                    print(f"  FLTrust Norm:               {np.round(fltrust_norm, 4)}")
-                else:
-                    print("  [UYARI] Sunucu referans deltası sıfır, FLTrust nötr skora düşüldü.")
+            # Krum: düşük skor = iyi → higher_is_better=False
+            rank_krum = to_ranks(krum_scores, higher_is_better=False)
+            # Pairwise cos: yüksek = iyi
+            rank_pairwise = to_ranks(median_pairwise, higher_is_better=True)
+            # FLTrust: yüksek = iyi
+            rank_fltrust = to_ranks(fltrust_scores, higher_is_better=True)
+
+            # Birleşik rank skoru (yüksek = daha güvenilir)
+            rank_combined = rank_krum + rank_pairwise + rank_fltrust
+
+            # ============================================================
+            # VETO MEKANİZMALARI
+            # ============================================================
+            veto_reasons = {i: [] for i in range(num_clients)}
+
+            # V1: Negatif medyan pairwise kosinüs → kesin ters yön
+            for i in range(num_clients):
+                if median_pairwise[i] < -0.1:
+                    veto_reasons[i].append("pairwise_cos<-0.1")
+
+            # V2: FLTrust = 0 → sunucu referansına tamamen ters
+            if self.server_model is not None and self.server_data is not None:
+                for i in range(num_clients):
+                    if fltrust_scores[i] < 0.01:
+                        veto_reasons[i].append("fltrust≈0")
+
+            # V3: Tüm sinyallerde son sırada → çoklu onay
+            for i in range(num_clients):
+                worst_in_signals = 0
+                if rank_krum[i] == 0:
+                    worst_in_signals += 1
+                if rank_pairwise[i] == 0:
+                    worst_in_signals += 1
+                if rank_fltrust[i] == 0:
+                    worst_in_signals += 1
+                if worst_in_signals >= 2:
+                    veto_reasons[i].append("multi_signal_worst")
+
+            # V4: EMA veto — önceki roundlarda sürekli düşük skor
+            for i, cid in enumerate(round_client_ids):
+                n = self.client_round_count.get(cid, 0)
+                ema_val = self.client_ema.get(cid, 1.0)
+                if n >= 2 and ema_val < 0.30:
+                    veto_reasons[i].append(f"ema={ema_val:.2f}")
+
+            all_vetoed = {i for i, reasons in veto_reasons.items() if reasons}
+
+            # ============================================================
+            # EMA GÜNCELLE
+            # ============================================================
+            # Normalize rank_combined → 0-1 arası instant skor
+            rc_min, rc_max = np.min(rank_combined), np.max(rank_combined)
+            if rc_max > rc_min:
+                instant_scores = (rank_combined - rc_min) / (rc_max - rc_min)
             else:
-                print("  [BİLGİ] Sunucu modeli/verisi yok, FLTrust bileşeni nötr (0.5).")
+                instant_scores = np.ones(num_clients) * 0.5
 
-            # -- 4. Anlık hibrit skor: Krum %25 + Kosinüs %35 + FLTrust %40 --
-            # FLTrust en güvenilir sinyal (sunucu referansı) → en yüksek ağırlık.
-            # Sunucu verisi yoksa Krum+Kosinüs ağırlıkları devreye girer.
-            instant_scores = 0.25 * krum_norm + 0.35 * cos_norm + 0.40 * fltrust_norm
-
-            # -- 5. EMA güncelle --
             for i, cid in enumerate(round_client_ids):
                 if cid not in self.client_ema:
                     self.client_ema[cid] = instant_scores[i]
@@ -426,9 +479,9 @@ class CustomRobustStrategy(FedAvg):
                     )
                     self.client_round_count[cid] += 1
 
-            # -- 6. Birleşik sıralama skoru --
-            # İlk 3 round'da anlık skora güven (EMA henüz olgunlaşmadı),
-            # sonrasında EMA ağırlığını artır.
+            # ============================================================
+            # SEÇIM
+            # ============================================================
             num_to_select = max(1, num_clients - num_malicious)
             combined = np.zeros(num_clients)
             for i, cid in enumerate(round_client_ids):
@@ -440,20 +493,37 @@ class CustomRobustStrategy(FedAvg):
                     combined[i] = 0.30 * instant_scores[i] + 0.70 * ema_val
 
             selected_indices = np.argsort(combined)[-num_to_select:].tolist()
-            forced_out = [i for i in range(num_clients) if i not in selected_indices]
 
-            self.prev_global_delta = median_delta.copy()
+            # Vetolu istemcileri zorla çıkar — ama minimum istemci sayısını koru
+            # Non-IID veriden dolayı bazı normal istemciler de vetoya takılabilir.
+            # En az 3 istemci kalmalı yoksa aggregation bozulur.
+            min_selected = max(3, num_clients // 2)
+            vetoed_in_selection = [v for v in all_vetoed if v in selected_indices]
+            # Rank skoru en düşükten başlayarak çıkar
+            vetoed_in_selection.sort(key=lambda v: rank_combined[v])
+            for v in vetoed_in_selection:
+                if len(selected_indices) > min_selected:
+                    selected_indices.remove(v)
+
+            forced_out = [i for i in range(num_clients) if i not in selected_indices]
+            self.prev_global_delta = np.median(raw_deltas, axis=0).copy()
 
             ema_display = {
                 round_client_ids[i]: round(self.client_ema[round_client_ids[i]], 4)
                 for i in range(num_clients)
             }
-            print(f"  Krum Puanları (norm):       {np.round(krum_norm, 4)}")
-            print(f"  Kosinüs Puanları (norm):    {np.round(cos_norm, 4)}")
-            print(f"  Anlık Hibrit Skorları:      {np.round(instant_scores, 4)}")
+            veto_display = {i: veto_reasons[i] for i in range(num_clients) if veto_reasons[i]}
+            print(f"  Raw Delta Normları:         {np.round(raw_delta_norms, 4)}")
+            print(f"  Krum Skorları:              {np.round(krum_scores, 4)}")
+            print(f"  Medyan Pairwise Cos:        {np.round(median_pairwise, 4)}")
+            print(f"  Rank Krum:                  {rank_krum}")
+            print(f"  Rank Pairwise:              {rank_pairwise}")
+            print(f"  Rank FLTrust:               {rank_fltrust}")
+            print(f"  Rank Birleşik:              {rank_combined}")
+            print(f"  Veto Nedenleri:             {veto_display}")
             print(f"  EMA Güven Skorları:         {ema_display}")
             print(f"  Birleşik Sıralama Skoru:    {np.round(combined, 4)}")
-            print(f"  Elinen indeksler:           {forced_out}")
+            print(f"  Elenen indeksler:           {forced_out}")
             print(f"  Seçilen İstemci İndeksleri: {selected_indices}")
 
         else:

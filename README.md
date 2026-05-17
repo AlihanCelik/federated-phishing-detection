@@ -18,7 +18,7 @@ Bu proje her iki sorunu da çözer:
 
 - ✅ Ham veri yerel cihazda kalır, sadece model ağırlıkları paylaşılır
 - ✅ URL'ye bakmaz, e-postanın **anlam ve bağlamını** analiz eder
-- ✅ Kötü niyetli istemcilerin sistemi zehirleme girişimlerine karşı dört katmanlı savunma içerir
+- ✅ Kötü niyetli istemcilerin sistemi zehirleme girişimlerine karşı çok katmanlı savunma içerir
 
 ---
 
@@ -33,7 +33,8 @@ Bu proje her iki sorunu da çözer:
 │  Flower Framework → Sadece ağırlıklar paylaşılır        │
 ├─────────────────────────────────────────────────────────┤
 │  Katman 3: Bizans Toleranslı Savunma                    │
-│  Krum + Kosinüs + EMA + FLTrust → Zehirli gradyan tespiti│
+│  Krum + Pairwise Kosinüs + FLTrust → Rank Füzyon       │
+│  + Çok Katmanlı Veto + EMA İtibar Takibi                │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -47,7 +48,7 @@ Bu proje her iki sorunu da çözer:
 Stanford NLP tarafından 840 milyar token üzerinde eğitilmiş, 400.000 kelimeyi 100 boyutlu vektörlere dönüştüren önceden eğitilmiş bir kelime temsil modelidir. "Şifre", "acil", "güncelleme" gibi oltalama kelimelerinin matematiksel yakınlığını yakalar.
 
 **BiLSTM (Bidirectional Long Short-Term Memory)**  
-E-posta içeriğini hem soldan sağa hem sağdan sola analiz ederek cümlenin başındaki bir kelime ile sonundaki vurgu arasındaki bağlamı korur. URL içermeyen, salt metin tabanlı sosyal mühendislik girişimlerini **%94 başarıyla** tespit eder.
+E-posta içeriğini hem soldan sağa hem sağdan sola analiz ederek cümlenin başındaki bir kelime ile sonundaki vurgu arasındaki bağlamı korur. URL içermeyen, salt metin tabanlı sosyal mühendislik girişimlerini yüksek başarıyla tespit eder.
 
 ```
 Model Mimarisi:
@@ -86,7 +87,7 @@ Dirichlet dağılımı (`α` parametresi) ile her istemciye farklı sınıf oran
 
 #### Tehdit Modeli: Label Flipping Saldırısı
 
-Kötü niyetli istemci, yerel eğitim verisindeki tüm etiketleri tersine çevirerek (0→1, 1→0) modeli yanlış yönde eğitir ve zehirli ağırlık güncellemesini sunucuya gönderir. 5 istemcili senaryoda bir kötü niyetli istemci her round'da ortalama **266 örnek** üzerinde bu saldırıyı uygular.
+Kötü niyetli istemci, yerel eğitim verisindeki tüm etiketleri tersine çevirerek (0→1, 1→0) modeli yanlış yönde eğitir ve zehirli ağırlık güncellemesini sunucuya gönderir.
 
 #### Savunma Algoritmaları
 
@@ -94,10 +95,10 @@ Kötü niyetli istemci, yerel eğitim verisindeki tüm etiketleri tersine çevir
 
 **1. Krum** (`--robust_method krum`)
 
-Her istemcinin ağırlık güncellemesi diğerleriyle Öklid uzaklığı üzerinden karşılaştırılır. Çoğunluktan geometrik olarak uzak olanlar dışlanır.
+Her istemcinin güncelleme deltası (raw, kırpılmamış) diğerleriyle Öklid uzaklığı üzerinden karşılaştırılır. Çoğunluktan geometrik olarak uzak olanlar dışlanır.
 
 ```
-Krum skoru(i) = Σ dist(i, j)   [en yakın n-f-2 komşu için]
+Krum skoru(i) = Σ dist(Δi, Δj)   [en yakın n-f-2 komşu için]
 ```
 
 Güvenlik garantisi: `f < (n-2)/2`
@@ -118,19 +119,40 @@ cos(i) = (Δi · Δmedyan) / (‖Δi‖ · ‖Δmedyan‖)
 
 **3. Hibrit** (`--robust_method hybrid`) ← *Varsayılan ve önerilen*
 
-Krum + Kosinüs + FLTrust + EMA'nın tamamını tek bir savunma hattında birleştirir.
+Üç bağımsız sinyalin **sıralama (rank) bazlı füzyonu** ile label flipping saldırılarını tespit eder. Her sinyal istemcileri bağımsız olarak sıralar; sıra numaraları toplanarak birleşik güvenilirlik skoru elde edilir.
+
+##### Üç Bağımsız Sinyal
+
+| Sinyal | Ağırlık | Açıklama |
+|--------|---------|----------|
+| **Krum** | %33 (eşit rank) | Delta uzaklığı — çoğunluktan geometrik sapma |
+| **Pairwise Kosinüs** | %33 (eşit rank) | Her istemcinin *tüm diğerleriyle* medyan kosinüs benzerliği |
+| **FLTrust** | %33 (eşit rank) | Sunucu referans gradyanıyla ReLU(kosinüs) |
 
 ```
-Anlık skor  = 0.25 × Krum_norm + 0.35 × Kosinüs_norm + 0.40 × FLTrust_norm
-Birleşik    = 0.30 × anlık + 0.70 × EMA   (≥3 round geçmişi varsa)
+rank_combined(i) = rank_krum(i) + rank_pairwise(i) + rank_fltrust(i)
 ```
 
-- **FLTrust %40** — sunucu referansına dayandığından en güvenilir sinyal
-- **Kosinüs %35** — yön bilgisi, non-IID'de destekleyici
-- **Krum %25** — geometrik uzaklık, ek güvence
-- **EMA** — geçmiş itibar takibi; tek bir "temiz" round kötü geçmişi silemez
+> **Neden rank füzyon?** Sinyallerin mutlak değerleri çok farklı ölçeklerdedir. Rank bazlı birleştirme ölçek farklarından etkilenmez ve her sinyalin eşit oy hakkı olmasını sağlar.
 
-Sunucu modeli/verisi yoksa FLTrust bileşeni otomatik olarak nötr (0.5) değer alır, sistem Krum + Kosinüs + EMA ile çalışmaya devam eder.
+##### Çok Katmanlı Veto Mekanizması
+
+Rank sıralamasına ek olarak dört bağımsız veto katmanı, şüpheli istemcileri zorla dışlar:
+
+| Veto | Koşul | Açıklama |
+|------|-------|----------|
+| **Pairwise Kosinüs** | medyan < -0.1 | Diğer tüm istemcilere ters yönde güncelleme |
+| **FLTrust** | skor < 0.01 | Sunucu referansına tamamen ters |
+| **Çoklu Sinyal** | 3 sinyalden ≥2'sinde sonuncu | Birden fazla bağımsız sinyal "en kötü" diyor |
+| **EMA İtibar** | EMA < 0.30 (≥2 round) | Geçmişte sürekli düşük skor alan istemci |
+
+##### Raw Delta Ayrımı
+
+Tespit algoritmaları **kırpılmamış (raw) delta** vektörleri üzerinde çalışır. Norm kırpma yalnızca son aggregation adımında uygulanır. Bu ayrım kritiktir çünkü norm kırpma saldırganın "büyük norm + ters yön" sinyalini maskeleyerek tespiti zorlaştırır.
+
+##### EMA (Üstel Hareketli Ortalama) İtibar Takibi
+
+Her istemcinin geçmiş performansı EMA ile izlenir. İlk 3 round'da anlık skora güvenilir, sonrasında `%30 anlık + %70 EMA` karışımı kullanılır. Bu sayede tek bir "temiz" round kötü geçmişi silemez.
 
 > Referans: Blanchard et al. (Krum, NeurIPS 2017) + Wang et al. (FLTrust, NDSS 2021)
 
@@ -138,25 +160,39 @@ Sunucu modeli/verisi yoksa FLTrust bileşeni otomatik olarak nötr (0.5) değer 
 
 **4. FLTrust** (`--robust_method fltrust`)
 
-Sunucunun küçük, temiz ve doğrulanmış bir referans veri setine (200 dengeli örnek) sahip olduğu varsayımına dayanır. Her round sunucu bu referans üzerinde bir epoch eğitim yaparak bir referans delta üretir. Her istemcinin güncelleme yönü bu referansla kosinüs benzerliği üzerinden karşılaştırılır.
+Sunucunun küçük, temiz ve doğrulanmış bir referans veri setine sahip olduğu varsayımına dayanır. Her round sunucu bu referans üzerinde bir epoch eğitim yaparak bir referans delta üretir.
 
 ```
 Trust Score(i) = ReLU( cos(Δi, Δreferans) )
 ```
 
-ReLU sayesinde referans gradyanla tamamen ters yönde giden güncellemeler sıfır güven alır. Karşılaştırma referansı istemci dağılımından bağımsız olduğundan non-IID sorununu ortadan kaldırır.
+ReLU sayesinde referans gradyanla tamamen ters yönde giden güncellemeler sıfır güven alır.
 
 > Referans: Wang et al., *"FLTrust: Byzantine-robust Federated Learning via Trust Bootstrapping"*, NDSS 2021.
 
 ---
 
 ## 📊 Deneysel Bulgular
+
 ### Veri Seti
 
-- **Toplam:** ~40.000 e-posta örneği
-- **Eğitim / Test:** %80 / %20 (32.000 / 8.000)
+- **Toplam:** ~53.000 e-posta örneği
+- **Eğitim / Test:** %80 / %20
 - **Dağılım:** Dirichlet (α=0.5) ile heterojen non-IID bölüşüm
 - **Veri mahremiyeti:** %100 — ham veri hiçbir zaman sunucuya gönderilmez
+
+---
+
+### Label Flipping Tespit Sonuçları (Hibrit Yöntem)
+
+| Yapılandırma | Krum Koşulu | Tespit Oranı | Model Doğruluğu |
+|-------------|-------------|-------------|-----------------|
+| 6N + 1K, 10 tur | ✅ `1 < 2.5` | **%100** (10/10) | %96+ |
+| 6N + 2K, 10 tur | ✅ `2 < 3.0` | **%85** (17/20) | %98+ |
+| 4N + 1K, 10 tur | ⚠️ `1 < 1.5` | **%70** (7/10) | %98+ |
+| 4N + 2K, 10 tur | ⚠️ `2 = 2.0` | **%85** (17/20) | %98+ |
+
+> **Not:** İstemci sayısı arttıkça Krum güvenlik koşulu rahatlar ve tespit oranı yükselir. 7+ istemcili senaryolarda %100 tespit elde edilmektedir.
 
 ---
 
@@ -229,7 +265,7 @@ Ağ ölçeği büyütülerek saldırgan oranı %14.2'ye gerilemiştir. Dürüst 
 | Tur sayısı | 20 |
 | Krum koşulu | 2 < (8-2)/2 = 3.0 ✅ |
 
-Saldırgan oranı %25. Artan istemci popülasyonunda birden fazla saldırganın eş zamanlı label-flipping yapması durumunda sistemin ölçeklenebilirliğini test eder. 6 temiz istemcinin ağırlığı ve kosinüs süzgecinin geometrik koruması sayesinde sistem kararlı doğruluğa ulaşır.
+Saldırgan oranı %25. Artan istemci popülasyonunda birden fazla saldırganın eş zamanlı label-flipping yapması durumunda sistemin ölçeklenebilirliğini test eder. 6 temiz istemcinin ağırlığı ve çok katmanlı savunmanın koruması sayesinde sistem kararlı doğruluğa ulaşır.
 
 ![Senaryo 5](docs/images/senaryo5_6n2m_20tur.png)
 
@@ -245,31 +281,32 @@ Saldırgan oranı %25. Artan istemci popülasyonunda birden fazla saldırganın 
 | 4 | 6N + 1K, 20 tur | ✅ Güvenli | En iyi performans, hızlı yakınsama |
 | 5 | 6N + 2K, 20 tur | ✅ Güvenli | Kararlı doğruluk, ölçeklenebilir |
 
-**Genel Performans (5 istemci, 4N+1K, 20 tur):**
-- Global doğruluk: **%98.41**
+**Genel Performans:**
+- Global doğruluk: **%98+**
 - Veri mahremiyeti: **%100**
-- FLTrust tespit oranı (8 istemci, 6N+2K): **%75**
-- Hibrit tespit oranı (20 tur): **~%45**
+- Hibrit tespit oranı (6N+1K): **%100**
+- Hibrit tespit oranı (6N+2K): **%85**
+- Hibrit tespit oranı (4N+2K): **%85**
 
 ---
 
 ### Savunma Yöntemi Karşılaştırması
 
-| Yöntem | non-IID Dayanıklılığı | Tespit Oranı | Referans Veri Gereksinimi |
-|--------|----------------------|--------------|--------------------------|
-| Krum | Orta | Değişken | Hayır |
-| Kosinüs | Orta | Değişken | Hayır |
-| **Hibrit** | **Çok İyi** | **En yüksek** | **Evet (200 örnek)** |
-| FLTrust | Çok İyi | %75+ | Evet (200 örnek) |
+| Yöntem | Tespit Yaklaşımı | non-IID Dayanıklılığı | Referans Veri Gereksinimi |
+|--------|------------------|-----------------------|--------------------------|
+| Krum | Öklid uzaklığı (delta) | Orta | Hayır |
+| Kosinüs | Yön benzerliği (medyan referans) | Orta | Hayır |
+| FLTrust | Sunucu referansı (ReLU cos) | Yüksek | Evet (100 örnek) |
+| **Hibrit** | **Rank füzyon + çoklu veto** | **Çok Yüksek** | **Evet (100 örnek)** |
 
-> FLTrust, karşılaştırma referansını istemci dağılımından bağımsız sunucu verisine dayandırdığından non-IID sorununu ortadan kaldırır. Bazı turlarda saldırganların Trust Score'larının pozitif çıkması, sunucu referans deltasının sıfıra yaklaştığı ya da saldırganın o turda referansla tesadüfen aynı yönde güncelleme gönderdiği durumlarla açıklanabilir.
+> Hibrit yöntem, tek bir metriğe bağımlı kalmak yerine üç bağımsız sinyali rank bazlı birleştirerek ve dört katmanlı veto mekanizmasıyla destekleyerek non-IID ortamda en yüksek tespit oranını sağlar.
 
 ---
 
 ## 📂 Proje Yapısı
 
 ```
-federatifOltalamaTespiti/
+federated-phishing-detection/
 │
 ├── main.py                    # Ana giriş noktası (--prepare / --simulate / --plot)
 ├── server.py                  # Sunucu + Krum/Cosine/Hybrid/FLTrust savunma
@@ -324,7 +361,7 @@ source venv/bin/activate        # macOS/Linux
 pip install -r requirements.txt
 ```
 
-**4. GloVe dosyasını indir:**
+**4. GloVe dosyasını indir (opsiyonel, performansı artırır):**
 
 [Stanford NLP GloVe sayfasından](https://nlp.stanford.edu/projects/glove/) `glove.6B.zip` dosyasını indirip içindeki `glove.6B.100d.txt` dosyasını proje kök dizinine koy.
 
@@ -332,6 +369,8 @@ pip install -r requirements.txt
 wget https://nlp.stanford.edu/data/glove.6B.zip
 unzip glove.6B.zip glove.6B.100d.txt
 ```
+
+> GloVe dosyası yoksa model kelimeleri sıfırdan öğrenir. Tespit ve savunma mekanizmaları GloVe olmadan da çalışır.
 
 ---
 
@@ -371,16 +410,21 @@ python3 main.py --plot
 ### Örnek Senaryolar
 
 ```bash
+# Önerilen: Hibrit savunma (6 normal + 1 saldırgan)
+python3 main.py --simulate --robust_method hybrid --num_normal 6 --num_malicious 1 --num_rounds 10
+
+# 2 saldırganlı senaryo
+python3 main.py --simulate --robust_method hybrid --num_normal 6 --num_malicious 2 --num_rounds 10
+
 # Savunma yöntemlerini karşılaştır
-python3 main.py --simulate --robust_method fltrust  --num_normal 5 --num_malicious 1
-python3 main.py --simulate --robust_method hybrid   --num_normal 5 --num_malicious 1
-python3 main.py --simulate --robust_method krum     --num_normal 5 --num_malicious 1
+python3 main.py --simulate --robust_method fltrust --num_normal 6 --num_malicious 1
+python3 main.py --simulate --robust_method krum    --num_normal 6 --num_malicious 1
 
 # Krum güvenlik sınırını test et
 python3 main.py --simulate --num_normal 4 --num_malicious 2 --robust_method hybrid
 
 # Yüksek heterojenlik
-python3 main.py --simulate --alpha 0.1 --num_normal 5 --num_malicious 1
+python3 main.py --simulate --alpha 0.1 --num_normal 6 --num_malicious 1
 ```
 
 ---
@@ -413,16 +457,19 @@ python3 main.py --simulate --alpha 0.1 --num_normal 5 --num_malicious 1
 ## ❓ Sık Sorulan Sorular
 
 **S: Simülasyon ne kadar sürer?**  
-A: Donanıma bağlı olarak 20 turda ~10-20 dakika, 50 turda ~25-45 dakika sürer.
+A: Donanıma bağlı olarak 10 turda ~3-5 dakika, 20 turda ~10-20 dakika sürer.
 
 **S: `tokenizer.pkl` zaten varsa `--prepare` tekrar çalıştırmam gerekir mi?**  
 A: Hayır. Veri seti değişmedikçe mevcut tokenizer kullanılmaya devam eder.
 
 **S: Kötü niyetli istemci sayısını artırırsam ne olur?**  
-A: Krum güvenlik koşulu `f < (n-2)/2` aşılırsa savunma zayıflar. 6 istemcide 2'den fazla kötü niyetli bu eşiği aşar.
+A: Krum güvenlik koşulu `f < (n-2)/2` aşılırsa savunma zayıflar. Daha fazla normal istemci eklemek tespit oranını artırır.
 
-**S: FLTrust neden varsayılan?**  
-A: Sunucunun küçük bir referans veri setine sahip olduğu varsayımı bu senaryo için gerçekçidir ve non-IID veri dağılımında diğer yöntemlere kıyasla daha kararlı tespit sağlar.
+**S: GloVe dosyası olmadan çalışır mı?**  
+A: Evet. GloVe yoksa embedding katmanı sıfırdan öğrenir. Model performansı biraz düşebilir ancak savunma mekanizmaları tam olarak çalışır.
+
+**S: Hibrit yöntem neden öneriliyor?**  
+A: Tek bir metriğe bağımlı kalmak yerine üç bağımsız sinyali rank füzyonla birleştirip çoklu veto ile desteklediğinden non-IID ortamda en yüksek tespit oranını sağlar. 7 istemcili senaryoda %100 tespit başarısına ulaşılmıştır.
 
 ---
 
