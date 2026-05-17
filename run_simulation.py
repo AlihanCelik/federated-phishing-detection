@@ -3,6 +3,26 @@ import time
 import sys
 import argparse
 import os
+import socket
+
+
+def wait_for_server(host: str = "127.0.0.1", port: int = 8080,
+                    timeout: int = 120, interval: float = 2.0):
+    """
+    Sunucunun belirtilen port'u dinlemeye başlamasını bekler.
+    Her `interval` saniyede bir bağlantı dener, `timeout` saniye sonra vazgeçer.
+    """
+    print(f"[Bekliyor] Sunucu {host}:{port} adresinde hazır olana kadar bekleniyor...", flush=True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                print(f"[Hazır] Sunucu {host}:{port} bağlantıya hazır.", flush=True)
+                return True
+        except (ConnectionRefusedError, OSError):
+            time.sleep(interval)
+    print(f"[HATA] Sunucu {timeout} saniye içinde başlamadı!", flush=True)
+    return False
 
 
 def main():
@@ -14,10 +34,10 @@ def main():
                         help="Normal (güvenilir) istemci sayısı")
     parser.add_argument("--num_malicious", type=int, default=1,
                         help="Kötü niyetli istemci sayısı (label flipping saldırısı)")
-    parser.add_argument("--robust_method", type=str, default="hybrid",
-                        choices=["cosine", "krum", "hybrid"],
-                        help="Savunma algoritması: cosine | krum | hybrid")
-    parser.add_argument("--num_rounds", type=int, default=20,
+    parser.add_argument("--robust_method", type=str, default="fltrust",
+                        choices=["cosine", "krum", "hybrid", "fltrust"],
+                        help="Savunma algoritması: cosine | krum | hybrid | fltrust")
+    parser.add_argument("--num_rounds", type=int, default=50,
                         help="Federatif öğrenme tur sayısı")
     parser.add_argument("--alpha", type=float, default=0.5,
                         help="Dirichlet heterojenlik parametresi (küçük=heterojen)")
@@ -25,6 +45,8 @@ def main():
                         help="CSV veri seti yolu")
     parser.add_argument("--glove_path", type=str, default="glove.6B.100d.txt",
                         help="GloVe dosyası yolu")
+    parser.add_argument("--server_data_size", type=int, default=100,
+                        help="FLTrust için sunucu temiz veri seti boyutu (varsayılan: 100)")
     args = parser.parse_args()
 
     total_clients = args.num_normal + args.num_malicious
@@ -66,16 +88,23 @@ def main():
 
     # --- Sunucuyu başlat ---
     print("\n[1] Sunucu (server.py) başlatılıyor...")
-    server_process = subprocess.Popen([
+    server_cmd = [
         sys.executable, "server.py",
         "--num_clients", str(total_clients),
         "--malicious_fraction", str(malicious_fraction),
         "--robust_method", args.robust_method,
         "--num_rounds", str(args.num_rounds),
-    ])
+        "--data_path", args.data_path,
+        "--glove_path", args.glove_path,
+        "--server_data_size", str(args.server_data_size),
+    ]
+    server_process = subprocess.Popen(server_cmd)
 
-    # Sunucunun hazır olması için bekle
-    time.sleep(6)
+    # Sunucunun port'u dinlemeye başlamasını bekle (sabit sleep yerine aktif kontrol)
+    if not wait_for_server(timeout=180):
+        print("Sunucu başlatılamadı. Simülasyon durduruluyor.")
+        server_process.terminate()
+        sys.exit(1)
 
     clients = []
 

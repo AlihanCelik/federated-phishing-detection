@@ -39,10 +39,11 @@ class CustomRobustStrategy(FedAvg):
     """
     Bizans Toleranslı Federatif Öğrenme Stratejisi.
 
-    Standart FedAvg'ın üzerine inşa edilmiş üç savunma yöntemi sunar:
-    - krum:   Öklid uzaklığına dayalı anomali tespiti (Blanchard et al., 2017)
-    - cosine: Kosinüs benzerliğine dayalı yön anomalisi tespiti
-    - hybrid: Krum + Kosinüs skorlarının ağırlıklı ortalaması (%50/%50)
+    Standart FedAvg'ın üzerine inşa edilmiş dört savunma yöntemi sunar:
+    - krum:    Öklid uzaklığına dayalı anomali tespiti (Blanchard et al., 2017)
+    - cosine:  Kosinüs benzerliğine dayalı yön anomalisi tespiti
+    - hybrid:  Krum + Kosinüs skorlarının ağırlıklı ortalaması + EMA itibar takibi
+    - fltrust: Sunucu referans gradyanına dayalı güven skoru (Cao et al., 2021)
 
     Her yöntem, çoğunluktan sapan (zehirli) gradyanları dışlayarak
     yalnızca güvenilir istemcilerin güncellemelerini birleştirir.
@@ -50,25 +51,30 @@ class CustomRobustStrategy(FedAvg):
 
     def __init__(self, robust_method: str = "hybrid",
                  malicious_fraction: float = 0.3,
-                 ema_alpha: float = 0.3, **kwargs):
+                 ema_alpha: float = 0.15,
+                 server_model=None,
+                 server_data=None, **kwargs):
         super().__init__(**kwargs)
         self.robust_method = robust_method
         self.malicious_fraction = malicious_fraction
         self.ema_alpha = ema_alpha
+        
+        # FLTrust için sunucu modeli ve temiz veri seti
+        self.server_model = server_model
+        self.server_data = server_data  # (x_train, y_train) tuple
 
         self.client_prev_weights: dict = {}
-        # client_id → son round'daki delta vektörü (tutarsızlık hesabı için)
-        self.client_prev_deltas: dict = {}
         # client_id → EMA güven skoru (0-1)
         self.client_ema: dict = {}
         # client_id → kaç roundda görüldü
         self.client_round_count: dict = {}
         # Sunucunun bir önceki rounddaki global ağırlıkları (delta hesabı için)
         self.global_weights: Optional[List[np.ndarray]] = None
+        # Bir önceki round'un global güncelleme yönü (momentum için)
+        self.prev_global_delta: Optional[np.ndarray] = None
 
         self.detection_stats = {
             "total_flipped_samples":       0,
-            "flipped_samples_recorded":    False,
             "total_malicious_rounds":      0,
             "correctly_excluded_rounds":   0,
             "incorrectly_included_rounds": 0,
@@ -108,6 +114,17 @@ class CustomRobustStrategy(FedAvg):
             # İlk round'da global ağırlık henüz yoksa, medyanı referans al
             median_w = np.median(flat_weights, axis=0)
             deltas = np.array([w - median_w for w in flat_weights])
+
+        # Gradyan norm kırpma: Her istemcinin delta normunu medyan norma kırp.
+        # Saldırgan büyük normlu gradyanla çoğunluğa "yakın" görünebilir.
+        # Norm kırpma, tüm deltaları eşit büyüklüğe getirip sadece YÖN farkına
+        # odaklanmamızı sağlar.
+        delta_norms = np.array([np.linalg.norm(d) for d in deltas])
+        median_norm = np.median(delta_norms)
+        if median_norm > 0:
+            for i in range(len(deltas)):
+                if delta_norms[i] > median_norm:
+                    deltas[i] = deltas[i] * (median_norm / delta_norms[i])
 
         # Yeterli istemci yoksa standart FedAvg uygula
         if num_clients < 3 or num_malicious == 0:
@@ -174,6 +191,133 @@ class CustomRobustStrategy(FedAvg):
             print(f"  Seçilen İstemci İndeksleri: {selected_indices}")
 
         # ------------------------------------------------------------------ #
+        #  FLTRUST (Güven Skoru Bazlı Savunma)                               #
+        # ------------------------------------------------------------------ #
+        elif self.robust_method == "fltrust":
+            print(f"\n--- [Round {server_round}] FLTrust Algoritması Uygulanıyor ---")
+
+            if self.server_model is None or self.server_data is None:
+                print("[HATA] FLTrust için sunucu modeli ve temiz veri seti gerekli!")
+                return super().aggregate_fit(server_round, results, failures)
+
+            # İlk round'da global ağırlık yoksa ilk istemciden al
+            if self.global_weights is None:
+                self.global_weights = [w.copy() for w in client_weights[0]]
+
+            # ---- Sunucu referans deltasını hesapla ----
+            # Sunucu kendi temiz verisiyle 1 epoch eğitim yapar,
+            # eski ağırlıklar ile yeni ağırlıklar arasındaki fark = referans delta.
+            # Bu delta "doğru yön"ü temsil eder.
+            old_weights_flat = flatten_weights(self.global_weights)
+            
+            # Modelin build edildiğinden emin ol (ilk round'da gerekebilir)
+            x_server, y_server = self.server_data
+            if len(self.server_model.weights) == 0:
+                dummy = np.zeros((1, x_server.shape[1]), dtype=np.int32)
+                self.server_model(dummy, training=False)
+            
+            self.server_model.set_weights(self.global_weights)
+            self.server_model.fit(x_server, y_server, epochs=1, batch_size=32, verbose=0)
+            new_weights_flat = flatten_weights(self.server_model.get_weights())
+            server_delta = new_weights_flat - old_weights_flat
+            server_norm  = np.linalg.norm(server_delta)
+
+            if server_norm == 0:
+                print("[UYARI] Sunucu referans deltası sıfır, FedAvg'a düşülüyor.")
+                return super().aggregate_fit(server_round, results, failures)
+
+            # ---- Her istemci için Trust Score hesapla ----
+            # TS = ReLU( cos(client_delta, server_delta) )
+            # Label flipping saldırısı sunucu referansına ters yönde gider
+            # → negatif kosinüs → ReLU ile 0'a indirilir → ağırlık = 0 → elenir.
+            trust_scores = np.zeros(num_clients)
+            for i in range(num_clients):
+                client_norm = np.linalg.norm(deltas[i])
+                if client_norm > 0:
+                    cos_sim = np.dot(deltas[i], server_delta) / (client_norm * server_norm)
+                    trust_scores[i] = max(0.0, float(cos_sim))
+
+            total_trust = np.sum(trust_scores)
+            if total_trust == 0:
+                print("[UYARI] Tüm istemciler negatif TS aldı! FedAvg'a düşülüyor.")
+                return super().aggregate_fit(server_round, results, failures)
+
+            # ---- Trust Score ağırlıklı model birleştirme ----
+            normalized_trust = trust_scores / total_trust
+            aggregated_weights = []
+            for layer_idx in range(len(client_weights[0])):
+                layer = np.zeros_like(client_weights[0][layer_idx], dtype=np.float64)
+                for i in range(num_clients):
+                    layer += normalized_trust[i] * client_weights[i][layer_idx]
+                aggregated_weights.append(layer)
+
+            selected_indices  = [i for i in range(num_clients) if trust_scores[i] > 0]
+            excluded_indices  = [i for i in range(num_clients) if trust_scores[i] <= 0]
+
+            print(f"  Sunucu Referans Norm:       {server_norm:.6f}")
+            print(f"  Güven Skorları (TS):        {np.round(trust_scores, 4)}")
+            print(f"  Normalize Ağırlıklar:       {np.round(normalized_trust, 4)}")
+            print(f"  Elenen İstemciler (TS≤0):   {excluded_indices}")
+            print(f"  Seçilen İstemci İndeksleri: {selected_indices}")
+
+            # ---- Tespit istatistiklerini güncelle ----
+            round_client_ids = []
+            for _, fit_res in results:
+                m = fit_res.metrics if fit_res.metrics else {}
+                round_client_ids.append(int(m.get("client_id", -1)))
+
+            round_detail = {
+                "round":                      server_round,
+                "num_clients":                num_clients,
+                "selected_indices":           list(selected_indices),
+                "excluded_indices":           excluded_indices,
+                "malicious_client_ids":       [],
+                "malicious_indices":          [],
+                "correctly_excluded":         [],
+                "incorrectly_included":       [],
+                "flipped_samples_this_round": 0,
+            }
+
+            for idx, (_, fit_res) in enumerate(results):
+                m = fit_res.metrics if fit_res.metrics else {}
+                if not bool(m.get("is_malicious", 0)):
+                    continue
+                cid     = int(m.get("client_id", idx))
+                flipped = int(m.get("flipped_count", 0))
+
+                round_detail["malicious_client_ids"].append(cid)
+                round_detail["malicious_indices"].append(idx)
+                # Bu round'daki toplam flip = tüm kötü niyetlilerin flip sayısı toplamı
+                round_detail["flipped_samples_this_round"] += flipped
+
+                # Toplam flip sayısını biriktir (birden fazla kötü niyetli için doğru toplam)
+                self.detection_stats["total_flipped_samples"] += flipped
+
+                self.detection_stats["total_malicious_rounds"] += 1
+
+                if idx not in selected_indices:
+                    round_detail["correctly_excluded"].append(cid)
+                    self.detection_stats["correctly_excluded_rounds"] += 1
+                    print(f"  [✓ TESPİT] İstemci #{cid} (results[{idx}]) "
+                          f"doğru elendi (TS={trust_scores[idx]:.4f}). "
+                          f"({flipped} flip'li örnek engellendi)")
+                else:
+                    round_detail["incorrectly_included"].append(cid)
+                    self.detection_stats["incorrectly_included_rounds"] += 1
+                    print(f"  [✗ KAÇIRDI] İstemci #{cid} (results[{idx}]) "
+                          f"seçildi (TS={trust_scores[idx]:.4f})! "
+                          f"({flipped} flip'li örnek modele karıştı)")
+
+            self.detection_stats["per_round"].append(round_detail)
+
+            # Global ağırlıkları güncelle ve sonucu döndür
+            self.global_weights = aggregated_weights
+            from flwr.common import ndarrays_to_parameters
+            aggregated_parameters = ndarrays_to_parameters(aggregated_weights)
+            print(f"  [FLTRUST] {len(selected_indices)}/{num_clients} istemci seçildi.")
+            return aggregated_parameters, {}
+
+        # ------------------------------------------------------------------ #
         #  HİBRİT (KRUM + COSİNÜS + EMA HAFIZA)                              #
         # ------------------------------------------------------------------ #
         elif self.robust_method == "hybrid":
@@ -228,43 +372,8 @@ class CustomRobustStrategy(FedAvg):
                 else (similarities - min_c) / (max_c - min_c)
             )
 
-            # -- Round-to-round tutarsızlık skoru --
-            # İstemcinin mevcut güncelleme yönü (delta) ile önceki rounddaki yönü (delta)
-            # arasındaki kosinüs benzerliği. Normalde istemciler IID verilerde benzer
-            # yönlere giderler, ancak ataklar genellikle keskin ve tutarsız yön değişimleri yaratabilir.
-            consistency_scores = np.ones(num_clients)  # varsayılan: tutarlı
-            for i, cid in enumerate(round_client_ids):
-                if cid in self.client_prev_deltas:
-                    prev = self.client_prev_deltas[cid]
-                    curr = deltas[i]
-                    norm_p = np.linalg.norm(prev)
-                    norm_c = np.linalg.norm(curr)
-                    if norm_p > 0 and norm_c > 0:
-                        consistency_scores[i] = float(
-                            np.dot(prev, curr) / (norm_p * norm_c)
-                        )
-                        # [-1, 1] → [0, 1] aralığına taşı
-                        consistency_scores[i] = (consistency_scores[i] + 1.0) / 2.0
-
-            # Tutarsızlık skorlarını normalize et
-            min_cs, max_cs = np.min(consistency_scores), np.max(consistency_scores)
-            cons_norm = (
-                np.ones(num_clients)
-                if max_cs == min_cs
-                else (consistency_scores - min_cs) / (max_cs - min_cs)
-            )
-
-            # ÖNEMLİ DÜZELTME: Label Flipping saldırılarında saldırgan her zaman 
-            # aynı sahte hedefe (zehirli minimuma) doğru çekim yapar. Bu yüzden 
-            # ardışık roundlarda güncelleme yönü aşırı derecede "TUTARLI" çıkar. 
-            # Normal istemciler ise stokastik (rastgele) mini-batchler kullandığı 
-            # için yönleri dalgalanır. Yani aşırı tutarlılık bir anomali (saldırı) 
-            # belirtisidir! Bu yüzden Tutarsızlık skorunu tersine çeviriyoruz:
-            # Ne kadar aşırı tutarlıysa (1.0), o kadar düşük puan (0.0) almalı.
-            cons_norm = 1.0 - cons_norm
-
-            # -- Anlık birleşik skor: Krum %35 + Kosinüs %35 + Tutarsızlık %30 --
-            instant_scores = 0.35 * krum_norm + 0.35 * cos_norm + 0.30 * cons_norm
+            # -- Anlık birleşik skor: Krum %40 + Kosinüs %60 --
+            instant_scores = 0.40 * krum_norm + 0.60 * cos_norm
 
             # -- EMA güncelle --
             for i, cid in enumerate(round_client_ids):
@@ -278,43 +387,34 @@ class CustomRobustStrategy(FedAvg):
                     )
                     self.client_round_count[cid] += 1
 
-            # -- Nihai skor: az geçmişte anlık ağır, çok geçmişte EMA ağır --
-            final_scores = np.zeros(num_clients)
-            for i, cid in enumerate(round_client_ids):
-                n = self.client_round_count[cid]
-                if n <= 2:
-                    final_scores[i] = instant_scores[i]
-                else:
-                    final_scores[i] = 0.35 * instant_scores[i] + 0.65 * self.client_ema[cid]
-
-            # -- Eleme: her zaman en düşük num_malicious istemciyi çıkar (sıralama bazlı) --
-            # Eşik yaklaşımı kötü niyetli yüksek skor aldığında işe yaramaz.
-            # Sıralama bazlı eleme garantili olarak num_malicious istemciyi dışarıda bırakır.
+            # -- Birleşik sıralama skoru --
+            # İlk 3 round'da anlık skora güven (EMA henüz olgunlaşmadı),
+            # sonrasında EMA ağırlığını artır.
             num_to_select = max(1, num_clients - num_malicious)
-
-            # Sıralama skoru: final_score'a EMA'yı da ekle (daha stabil)
             combined = np.zeros(num_clients)
             for i, cid in enumerate(round_client_ids):
+                n = self.client_round_count.get(cid, 1)
                 ema_val = self.client_ema.get(cid, instant_scores[i])
-                combined[i] = 0.5 * final_scores[i] + 0.5 * ema_val
+                if n <= 3:
+                    combined[i] = instant_scores[i]
+                else:
+                    combined[i] = 0.30 * instant_scores[i] + 0.70 * ema_val
 
-            # En yüksek num_to_select istemciyi seç
+            # En yüksek num_to_select istemciyi seç (saf sıralama, eşik yok)
             selected_indices = np.argsort(combined)[-num_to_select:].tolist()
             forced_out = [i for i in range(num_clients) if i not in selected_indices]
 
-            # -- Ağırlıkları/Deltaları bir sonraki round için sakla --
-            for i, cid in enumerate(round_client_ids):
-                self.client_prev_weights[cid] = flat_weights[i].copy()
-                self.client_prev_deltas[cid] = deltas[i].copy()
+            # Global momentumu bir sonraki round için sakla
+            self.prev_global_delta = median_delta.copy()
 
-            ema_display = {round_client_ids[i]: round(self.client_ema[round_client_ids[i]], 4)
-                           for i in range(num_clients)}
+            ema_display = {
+                round_client_ids[i]: round(self.client_ema[round_client_ids[i]], 4)
+                for i in range(num_clients)
+            }
             print(f"  Krum Puanları (norm):       {np.round(krum_norm, 4)}")
             print(f"  Kosinüs Puanları (norm):    {np.round(cos_norm, 4)}")
-            print(f"  Tutarsızlık Puanları (norm):{np.round(cons_norm, 4)}")
             print(f"  Anlık Hibrit Skorları:      {np.round(instant_scores, 4)}")
             print(f"  EMA Güven Skorları:         {ema_display}")
-            print(f"  Nihai Skorlar:              {np.round(final_scores, 4)}")
             print(f"  Birleşik Sıralama Skoru:    {np.round(combined, 4)}")
             print(f"  Elinen indeksler:           {forced_out}")
             print(f"  Seçilen İstemci İndeksleri: {selected_indices}")
@@ -365,17 +465,11 @@ class CustomRobustStrategy(FedAvg):
 
             round_detail["malicious_client_ids"].append(client_id)
             round_detail["malicious_indices"].append(idx)
-            round_detail["flipped_samples_this_round"] = flipped
+            # Bu round'daki toplam flip = tüm kötü niyetlilerin flip sayısı toplamı
+            round_detail["flipped_samples_this_round"] += flipped
 
-            # flip sayısını her kötü niyetli istemci için bir kez kaydet
-            # (client_id bazında takip et — aynı istemcinin değerini tekrar yazma)
-            if not self.detection_stats["flipped_samples_recorded"]:
-                self.detection_stats["total_flipped_samples"] = flipped
-                self.detection_stats["flipped_samples_recorded"] = True
-            else:
-                # Birden fazla kötü niyetli varsa en büyük flip sayısını tut
-                if flipped > self.detection_stats["total_flipped_samples"]:
-                    self.detection_stats["total_flipped_samples"] = flipped
+            # Toplam flip sayısını biriktir (birden fazla kötü niyetli için doğru toplam)
+            self.detection_stats["total_flipped_samples"] += flipped
 
             self.detection_stats["total_malicious_rounds"] += 1
 
@@ -421,6 +515,15 @@ def weighted_average(metrics: List[Tuple[int, dict]]) -> dict:
 def main():
     import argparse
     import json
+    import os
+    import numpy as np
+    import pandas as pd
+    from src.bilstm_model import build_bilstm_model
+    from src.glove_loader import load_glove_embeddings
+    from src.data_preprocessing import (
+        load_global_tokenizer,
+        texts_to_padded,
+    )
 
     parser = argparse.ArgumentParser(description="Federatif Öğrenme Sunucusu")
     parser.add_argument("--num_clients", type=int, default=3,
@@ -428,10 +531,16 @@ def main():
     parser.add_argument("--malicious_fraction", type=float, default=0.3,
                         help="Kötü niyetli istemci oranı (0.0 - 1.0)")
     parser.add_argument("--robust_method", type=str, default="hybrid",
-                        choices=["cosine", "krum", "hybrid"],
-                        help="Savunma algoritması: cosine | krum | hybrid")
+                        choices=["cosine", "krum", "hybrid", "fltrust"],
+                        help="Savunma algoritması: cosine | krum | hybrid | fltrust")
     parser.add_argument("--num_rounds", type=int, default=20,
                         help="Federatif öğrenme tur sayısı")
+    parser.add_argument("--data_path", type=str, default="email_text.csv",
+                        help="CSV veri seti yolu (FLTrust için sunucu temiz verisi)")
+    parser.add_argument("--glove_path", type=str, default="glove.6B.100d.txt",
+                        help="GloVe dosyası yolu")
+    parser.add_argument("--server_data_size", type=int, default=100,
+                        help="FLTrust için sunucu temiz veri seti boyutu")
     args = parser.parse_args()
 
     num_malicious = math.ceil(args.num_clients * args.malicious_fraction)
@@ -446,9 +555,76 @@ def main():
     print(f"  Tur Sayısı      : {args.num_rounds}")
     print(f"{'='*60}\n")
 
+    # FLTrust için sunucu modeli ve temiz veri seti hazırla
+    server_model = None
+    server_data = None
+    
+    if args.robust_method == "fltrust":
+        print("[FLTrust] Sunucu temiz veri seti hazırlanıyor...")
+        
+        # Veriyi yükle
+        if os.path.exists(args.data_path):
+            df = pd.read_csv(args.data_path)
+            texts = df['text'].astype(str).tolist()
+            labels = np.array(df['label'].astype(int).tolist())
+        else:
+            print(f"HATA: '{args.data_path}' bulunamadı!")
+            return
+        
+        # Tokenizer yükle
+        tokenizer = load_global_tokenizer("tokenizer.pkl")
+        max_length = 50
+        max_words = 5000
+        
+        # Sunucu için küçük temiz veri seti oluştur (dengeli)
+        # Her sınıftan eşit sayıda örnek al
+        phishing_indices = np.where(labels == 1)[0]
+        normal_indices = np.where(labels == 0)[0]
+        
+        samples_per_class = args.server_data_size // 2
+        selected_phishing = np.random.choice(phishing_indices, samples_per_class, replace=False)
+        selected_normal = np.random.choice(normal_indices, samples_per_class, replace=False)
+        selected_indices = np.concatenate([selected_phishing, selected_normal])
+        np.random.shuffle(selected_indices)
+        
+        server_texts = [texts[i] for i in selected_indices]
+        server_labels = labels[selected_indices]
+        
+        x_server = texts_to_padded(server_texts, tokenizer, max_length=max_length)
+        y_server = server_labels
+        
+        print(f"  Sunucu veri seti: {len(x_server)} örnek "
+              f"(Phishing: {np.sum(y_server)}, Normal: {len(y_server) - np.sum(y_server)})")
+        
+        # Sunucu modeli oluştur
+        vocab_size = min(max_words, len(tokenizer.word_index) + 1)
+        embedding_matrix = None
+        if os.path.exists(args.glove_path):
+            embedding_matrix = load_glove_embeddings(
+                args.glove_path, tokenizer.word_index, vocab_size, embedding_dim=100
+            )
+        
+        server_model = build_bilstm_model(
+            vocab_size=vocab_size,
+            embedding_dim=100,
+            max_length=max_length,
+            embedding_matrix=embedding_matrix
+        )
+        
+        # Modeli build et: set_weights() çağrılabilmesi için
+        # en az bir forward pass gerekir (Keras lazy build)
+        dummy_input = np.zeros((1, max_length), dtype=np.int32)
+        server_model(dummy_input, training=False)
+        print(f"  Sunucu modeli build edildi: {server_model.count_params()} parametre")
+        
+        server_data = (x_server, y_server)
+        print("[FLTrust] Sunucu hazırlığı tamamlandı.\n")
+
     strategy = CustomRobustStrategy(
         robust_method=args.robust_method,
         malicious_fraction=args.malicious_fraction,
+        server_model=server_model,
+        server_data=server_data,
         min_fit_clients=args.num_clients,
         min_available_clients=args.num_clients,
         min_evaluate_clients=args.num_clients,
@@ -485,7 +661,8 @@ def main():
             "incorrectly_included_rounds": strategy.detection_stats["incorrectly_included_rounds"],
             "detection_rate_pct":          round(detection_rate, 2),
             "ema_final_scores":            {str(k): round(v, 4)
-                                            for k, v in strategy.client_ema.items()},
+                                            for k, v in strategy.client_ema.items()}
+                                            if args.robust_method == "hybrid" else {},
             "per_round":                   strategy.detection_stats["per_round"],
         },
     }

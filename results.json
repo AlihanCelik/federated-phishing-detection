@@ -1,687 +1,783 @@
 {
-  "method": "hybrid",
-  "num_clients": 6,
-  "num_normal": 5,
-  "num_malicious": 1,
+  "method": "fltrust",
+  "num_clients": 8,
+  "num_normal": 6,
+  "num_malicious": 2,
   "num_rounds": 20,
   "losses": [
     [
       1,
-      0.48015108661817724
+      0.5151896686958167
     ],
     [
       2,
-      0.07940303016698262
+      0.3715461008899646
     ],
     [
       3,
-      0.057405123903330045
+      0.07208794358550363
     ],
     [
       4,
-      0.05657192297233338
+      0.06292062325669434
     ],
     [
       5,
-      0.06335650639793795
+      3.4684961300202732
     ],
     [
       6,
-      0.06620393728215564
+      0.1106136196572724
     ],
     [
       7,
-      0.0808342085133172
+      0.05745083752431367
     ],
     [
       8,
-      0.07481674004405815
+      0.6556313360298185
     ],
     [
       9,
-      0.08689466540024361
+      0.06104673977757352
     ],
     [
       10,
-      0.08784956958640405
+      0.07156630116746933
     ],
     [
       11,
-      0.09203210424377838
+      0.08191630756807816
     ],
     [
       12,
-      0.08339773451815041
+      0.7585096959824555
     ],
     [
       13,
-      0.10029106561771849
+      0.060696066815525807
     ],
     [
       14,
-      0.08318971736903473
+      0.07591343803802339
     ],
     [
       15,
-      0.11495649684623062
+      0.08250339771601409
     ],
     [
       16,
-      0.0978309149460398
+      0.0949037375033568
     ],
     [
       17,
-      0.09839980456917012
+      0.41629479843125433
     ],
     [
       18,
-      0.11437925097397939
+      0.06466819357350781
     ],
     [
       19,
-      0.09658705793569577
+      0.07494804646523126
     ],
     [
       20,
-      0.09185559468291112
+      0.08707143789496487
     ]
   ],
   "accuracies": [
     [
       1,
-      0.9546385918773056
+      0.8839310790418634
     ],
     [
       2,
-      0.9774590286741314
+      0.8571029220951064
     ],
     [
       3,
-      0.9825819636710355
+      0.9747554779330353
     ],
     [
       4,
-      0.9832339895675417
+      0.9806241244230373
     ],
     [
       5,
-      0.9834202801761525
+      0.562366094731374
     ],
     [
       6,
-      0.9818368193411703
+      0.9692594247081971
     ],
     [
       7,
-      0.9829545447272533
+      0.9820214159498672
     ],
     [
       8,
-      0.9825819692950579
+      0.7950628844759994
     ],
     [
       9,
-      0.9825819826972201
+      0.9808104378987202
     ],
     [
       10,
-      0.9814642247051312
+      0.981369365671928
     ],
     [
       11,
-      0.98220938838874
+      0.9799720584541128
     ],
     [
       12,
-      0.9819299565286732
+      0.6849557416295805
     ],
     [
       13,
-      0.9814642183316091
+      0.9802515221186222
     ],
     [
       14,
-      0.9816505221647228
+      0.9798788971772125
     ],
     [
       15,
-      0.9823956670553248
+      0.980065206849525
     ],
     [
       16,
-      0.9815573932494741
+      0.9784815886545914
     ],
     [
       17,
-      0.9820231123925943
+      0.8117373060391679
     ],
     [
       18,
-      0.981371100420124
+      0.9798788957669117
     ],
     [
       19,
-      0.9823956752276456
+      0.9801583535570181
     ],
     [
       20,
-      0.9811847840065218
+      0.9788542114694451
     ]
   ],
   "label_flipping": {
-    "total_flipped_samples": 1828,
-    "total_malicious_rounds": 20,
-    "correctly_excluded_rounds": 17,
-    "incorrectly_included_rounds": 3,
-    "detection_rate_pct": 85.0,
-    "ema_final_scores": {
-      "2": 0.466,
-      "5": 0.5925,
-      "3": 0.4647,
-      "4": 0.7516,
-      "1": 0.7337,
-      "6": 0.422
-    },
+    "total_flipped_samples": 183520,
+    "total_malicious_rounds": 40,
+    "correctly_excluded_rounds": 30,
+    "incorrectly_included_rounds": 10,
+    "detection_rate_pct": 75.0,
+    "ema_final_scores": {},
     "per_round": [
       {
         "round": 1,
-        "num_clients": 6,
+        "num_clients": 8,
         "selected_indices": [
-          3,
           0,
+          1,
           5,
-          4,
-          1
+          6
         ],
         "excluded_indices": [
-          2
+          2,
+          3,
+          4,
+          7
         ],
         "malicious_client_ids": [
-          6
+          8,
+          7
         ],
         "malicious_indices": [
+          4,
           5
         ],
-        "correctly_excluded": [],
-        "incorrectly_included": [
-          6
+        "correctly_excluded": [
+          8
         ],
-        "flipped_samples_this_round": 1828
+        "incorrectly_included": [
+          7
+        ],
+        "flipped_samples_this_round": 9176
       },
       {
         "round": 2,
-        "num_clients": 6,
+        "num_clients": 8,
         "selected_indices": [
-          5,
+          0,
           1,
+          2,
           3,
           4,
-          2
+          5,
+          6,
+          7
         ],
-        "excluded_indices": [
-          0
-        ],
+        "excluded_indices": [],
         "malicious_client_ids": [
-          6
+          8,
+          7
         ],
         "malicious_indices": [
+          0,
           1
         ],
         "correctly_excluded": [],
         "incorrectly_included": [
-          6
+          8,
+          7
         ],
-        "flipped_samples_this_round": 1828
+        "flipped_samples_this_round": 9176
       },
       {
         "round": 3,
-        "num_clients": 6,
+        "num_clients": 8,
         "selected_indices": [
-          4,
-          3,
+          1,
           2,
-          0,
-          5
-        ],
-        "excluded_indices": [
-          1
-        ],
-        "malicious_client_ids": [
+          3,
+          4,
+          5,
           6
         ],
+        "excluded_indices": [
+          0,
+          7
+        ],
+        "malicious_client_ids": [
+          7,
+          8
+        ],
         "malicious_indices": [
+          0,
+          7
+        ],
+        "correctly_excluded": [
+          7,
+          8
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 4,
+        "num_clients": 8,
+        "selected_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          7
+        ],
+        "excluded_indices": [
+          5,
+          6
+        ],
+        "malicious_client_ids": [
+          7,
+          8
+        ],
+        "malicious_indices": [
+          5,
+          6
+        ],
+        "correctly_excluded": [
+          7,
+          8
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 5,
+        "num_clients": 8,
+        "selected_indices": [
+          0,
+          1,
+          2,
+          3,
+          5,
+          7
+        ],
+        "excluded_indices": [
+          4,
+          6
+        ],
+        "malicious_client_ids": [
+          8,
+          7
+        ],
+        "malicious_indices": [
+          4,
+          7
+        ],
+        "correctly_excluded": [
+          8
+        ],
+        "incorrectly_included": [
+          7
+        ],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 6,
+        "num_clients": 8,
+        "selected_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "excluded_indices": [
+          7
+        ],
+        "malicious_client_ids": [
+          8,
+          7
+        ],
+        "malicious_indices": [
+          6,
+          7
+        ],
+        "correctly_excluded": [
+          7
+        ],
+        "incorrectly_included": [
+          8
+        ],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 7,
+        "num_clients": 8,
+        "selected_indices": [
+          1,
+          2,
+          4,
+          5,
+          6,
+          7
+        ],
+        "excluded_indices": [
+          0,
+          3
+        ],
+        "malicious_client_ids": [
+          7,
+          8
+        ],
+        "malicious_indices": [
+          0,
+          3
+        ],
+        "correctly_excluded": [
+          7,
+          8
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 8,
+        "num_clients": 8,
+        "selected_indices": [
+          0,
+          1,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "excluded_indices": [
+          2
+        ],
+        "malicious_client_ids": [
+          8,
+          7
+        ],
+        "malicious_indices": [
+          2,
+          4
+        ],
+        "correctly_excluded": [
+          8
+        ],
+        "incorrectly_included": [
+          7
+        ],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 9,
+        "num_clients": 8,
+        "selected_indices": [
+          0,
+          1,
+          2,
+          4,
+          5,
+          7
+        ],
+        "excluded_indices": [
+          3,
+          6
+        ],
+        "malicious_client_ids": [
+          7,
+          8
+        ],
+        "malicious_indices": [
+          3,
+          6
+        ],
+        "correctly_excluded": [
+          7,
+          8
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 10,
+        "num_clients": 8,
+        "selected_indices": [
+          1,
+          2,
+          5,
+          6
+        ],
+        "excluded_indices": [
+          0,
+          3,
+          4,
+          7
+        ],
+        "malicious_client_ids": [
+          8,
+          7
+        ],
+        "malicious_indices": [
+          3,
+          4
+        ],
+        "correctly_excluded": [
+          8,
+          7
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 11,
+        "num_clients": 8,
+        "selected_indices": [
+          0,
+          1,
+          6,
+          7
+        ],
+        "excluded_indices": [
+          2,
+          3,
+          4,
+          5
+        ],
+        "malicious_client_ids": [
+          8,
+          7
+        ],
+        "malicious_indices": [
+          2,
+          4
+        ],
+        "correctly_excluded": [
+          8,
+          7
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 12,
+        "num_clients": 8,
+        "selected_indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "excluded_indices": [
+          0
+        ],
+        "malicious_client_ids": [
+          8,
+          7
+        ],
+        "malicious_indices": [
+          3,
+          6
+        ],
+        "correctly_excluded": [],
+        "incorrectly_included": [
+          8,
+          7
+        ],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 13,
+        "num_clients": 8,
+        "selected_indices": [
+          0,
+          2,
+          3,
+          4,
+          6,
+          7
+        ],
+        "excluded_indices": [
+          1,
+          5
+        ],
+        "malicious_client_ids": [
+          7,
+          8
+        ],
+        "malicious_indices": [
+          1,
+          5
+        ],
+        "correctly_excluded": [
+          7,
+          8
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 14,
+        "num_clients": 8,
+        "selected_indices": [
+          1,
+          3,
+          6
+        ],
+        "excluded_indices": [
+          0,
+          2,
+          4,
+          5,
+          7
+        ],
+        "malicious_client_ids": [
+          8,
+          7
+        ],
+        "malicious_indices": [
+          2,
+          7
+        ],
+        "correctly_excluded": [
+          8,
+          7
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 15,
+        "num_clients": 8,
+        "selected_indices": [
+          4,
+          5,
+          6
+        ],
+        "excluded_indices": [
+          0,
+          1,
+          2,
+          3,
+          7
+        ],
+        "malicious_client_ids": [
+          7,
+          8
+        ],
+        "malicious_indices": [
+          0,
+          2
+        ],
+        "correctly_excluded": [
+          7,
+          8
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 16,
+        "num_clients": 8,
+        "selected_indices": [
+          0,
+          4,
+          6
+        ],
+        "excluded_indices": [
+          1,
+          2,
+          3,
+          5,
+          7
+        ],
+        "malicious_client_ids": [
+          7,
+          8
+        ],
+        "malicious_indices": [
+          1,
+          2
+        ],
+        "correctly_excluded": [
+          7,
+          8
+        ],
+        "incorrectly_included": [],
+        "flipped_samples_this_round": 9176
+      },
+      {
+        "round": 17,
+        "num_clients": 8,
+        "selected_indices": [
+          1,
+          2,
+          4,
+          6
+        ],
+        "excluded_indices": [
+          0,
+          3,
+          5,
+          7
+        ],
+        "malicious_client_ids": [
+          8,
+          7
+        ],
+        "malicious_indices": [
+          1,
           4
         ],
         "correctly_excluded": [],
         "incorrectly_included": [
-          6
+          8,
+          7
         ],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 4,
-        "num_clients": 6,
-        "selected_indices": [
-          4,
-          3,
-          1,
-          2,
-          5
-        ],
-        "excluded_indices": [
-          0
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          0
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 5,
-        "num_clients": 6,
-        "selected_indices": [
-          4,
-          1,
-          5,
-          0,
-          2
-        ],
-        "excluded_indices": [
-          3
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          3
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 6,
-        "num_clients": 6,
-        "selected_indices": [
-          0,
-          4,
-          3,
-          5,
-          1
-        ],
-        "excluded_indices": [
-          2
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          2
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 7,
-        "num_clients": 6,
-        "selected_indices": [
-          2,
-          1,
-          4,
-          5,
-          3
-        ],
-        "excluded_indices": [
-          0
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          0
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 8,
-        "num_clients": 6,
-        "selected_indices": [
-          3,
-          1,
-          4,
-          5,
-          2
-        ],
-        "excluded_indices": [
-          0
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          0
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 9,
-        "num_clients": 6,
-        "selected_indices": [
-          5,
-          2,
-          1,
-          0,
-          3
-        ],
-        "excluded_indices": [
-          4
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          4
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 10,
-        "num_clients": 6,
-        "selected_indices": [
-          1,
-          4,
-          5,
-          2,
-          0
-        ],
-        "excluded_indices": [
-          3
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          3
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 11,
-        "num_clients": 6,
-        "selected_indices": [
-          5,
-          4,
-          1,
-          3,
-          0
-        ],
-        "excluded_indices": [
-          2
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          2
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 12,
-        "num_clients": 6,
-        "selected_indices": [
-          2,
-          5,
-          4,
-          1,
-          3
-        ],
-        "excluded_indices": [
-          0
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          0
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 13,
-        "num_clients": 6,
-        "selected_indices": [
-          5,
-          2,
-          0,
-          3,
-          1
-        ],
-        "excluded_indices": [
-          4
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          4
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 14,
-        "num_clients": 6,
-        "selected_indices": [
-          3,
-          4,
-          2,
-          1,
-          5
-        ],
-        "excluded_indices": [
-          0
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          0
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 15,
-        "num_clients": 6,
-        "selected_indices": [
-          2,
-          5,
-          0,
-          1,
-          4
-        ],
-        "excluded_indices": [
-          3
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          3
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 16,
-        "num_clients": 6,
-        "selected_indices": [
-          5,
-          2,
-          3,
-          4,
-          0
-        ],
-        "excluded_indices": [
-          1
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          1
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
-      },
-      {
-        "round": 17,
-        "num_clients": 6,
-        "selected_indices": [
-          1,
-          3,
-          5,
-          4,
-          2
-        ],
-        "excluded_indices": [
-          0
-        ],
-        "malicious_client_ids": [
-          6
-        ],
-        "malicious_indices": [
-          0
-        ],
-        "correctly_excluded": [
-          6
-        ],
-        "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
+        "flipped_samples_this_round": 9176
       },
       {
         "round": 18,
-        "num_clients": 6,
+        "num_clients": 8,
         "selected_indices": [
           0,
-          4,
           3,
+          4,
           5,
-          1
+          6,
+          7
         ],
         "excluded_indices": [
+          1,
           2
         ],
         "malicious_client_ids": [
-          6
+          8,
+          7
         ],
         "malicious_indices": [
+          1,
           2
         ],
         "correctly_excluded": [
-          6
+          8,
+          7
         ],
         "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
+        "flipped_samples_this_round": 9176
       },
       {
         "round": 19,
-        "num_clients": 6,
+        "num_clients": 8,
         "selected_indices": [
-          5,
-          4,
+          0,
           2,
           3,
-          1
+          5,
+          7
         ],
         "excluded_indices": [
-          0
+          1,
+          4,
+          6
         ],
         "malicious_client_ids": [
-          6
+          7,
+          8
         ],
         "malicious_indices": [
-          0
+          1,
+          4
         ],
         "correctly_excluded": [
-          6
+          7,
+          8
         ],
         "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
+        "flipped_samples_this_round": 9176
       },
       {
         "round": 20,
-        "num_clients": 6,
+        "num_clients": 8,
         "selected_indices": [
-          2,
-          4,
-          3,
           1,
-          5
+          4,
+          5,
+          7
         ],
         "excluded_indices": [
-          0
+          0,
+          2,
+          3,
+          6
         ],
         "malicious_client_ids": [
-          6
+          8,
+          7
         ],
         "malicious_indices": [
-          0
-        ],
-        "correctly_excluded": [
+          3,
           6
         ],
+        "correctly_excluded": [
+          8,
+          7
+        ],
         "incorrectly_included": [],
-        "flipped_samples_this_round": 1828
+        "flipped_samples_this_round": 9176
       }
     ]
   }

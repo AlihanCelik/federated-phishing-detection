@@ -9,7 +9,8 @@ Ana giriş noktası. Üç mod desteklenir:
 
 Kullanım örnekleri:
   python main.py --prepare
-  python main.py --simulate --num_normal 5 --num_malicious 1 --robust_method hybrid
+  python main.py --simulate --num_normal 4 --num_malicious 1 --robust_method fltrust
+  python main.py --simulate --num_normal 4 --num_malicious 1 --robust_method hybrid
   python main.py --plot
 """
 
@@ -42,13 +43,14 @@ def simulate(args):
     """run_simulation.py'yi uygun argümanlarla çalıştırır."""
     cmd = [
         sys.executable, "run_simulation.py",
-        "--num_normal", str(args.num_normal),
-        "--num_malicious", str(args.num_malicious),
-        "--robust_method", args.robust_method,
-        "--num_rounds", str(args.num_rounds),
-        "--alpha", str(args.alpha),
-        "--data_path", args.data_path,
-        "--glove_path", args.glove_path,
+        "--num_normal",       str(args.num_normal),
+        "--num_malicious",    str(args.num_malicious),
+        "--robust_method",    args.robust_method,
+        "--num_rounds",       str(args.num_rounds),
+        "--alpha",            str(args.alpha),
+        "--data_path",        args.data_path,
+        "--glove_path",       args.glove_path,
+        "--server_data_size", str(args.server_data_size),
     ]
     subprocess.run(cmd)
 
@@ -82,9 +84,9 @@ def main():
                         help="Normal istemci sayısı (varsayılan: 5)")
     parser.add_argument("--num_malicious", type=int, default=1,
                         help="Kötü niyetli istemci sayısı (varsayılan: 1)")
-    parser.add_argument("--robust_method", type=str, default="hybrid",
-                        choices=["cosine", "krum", "hybrid"],
-                        help="Savunma algoritması: cosine | krum | hybrid (varsayılan: hybrid)")
+    parser.add_argument("--robust_method", type=str, default="fltrust",
+                        choices=["cosine", "krum", "hybrid", "fltrust"],
+                        help="Savunma algoritması: cosine | krum | hybrid | fltrust (varsayılan: fltrust)")
     parser.add_argument("--num_rounds", type=int, default=20,
                         help="Federatif öğrenme tur sayısı (varsayılan: 20)")
     parser.add_argument("--alpha", type=float, default=0.5,
@@ -95,6 +97,8 @@ def main():
                         help="GloVe dosyası yolu (varsayılan: glove.6B.100d.txt)")
     parser.add_argument("--tokenizer_path", type=str, default="tokenizer.pkl",
                         help="Tokenizer kayıt/yükleme yolu (varsayılan: tokenizer.pkl)")
+    parser.add_argument("--server_data_size", type=int, default=100,
+                        help="FLTrust için sunucu temiz veri seti boyutu (varsayılan: 100)")
 
     args = parser.parse_args()
 
