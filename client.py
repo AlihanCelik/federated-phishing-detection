@@ -42,7 +42,7 @@ class PhishingClient(fl.client.NumPyClient):
         if self.is_malicious:
             print("[KÖTÜ NİYETLİ İSTEMCİ] Zehirlenmiş etiketlerle eğitim yapılıyor.")
 
-        self.model.fit(self.x_train, self.y_train, epochs=2, batch_size=32, verbose=1)
+        self.model.fit(self.x_train, self.y_train, epochs=5, batch_size=32, verbose=1)
         return self.model.get_weights(), len(self.x_train), {}
 
     def evaluate(self, parameters, config):
