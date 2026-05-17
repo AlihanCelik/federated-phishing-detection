@@ -109,15 +109,27 @@ def split_data_heterogeneous(texts, labels, num_clients, client_id, alpha=0.5, s
     """
     Dirichlet dağılımı kullanarak heterojen (non-IID) veri bölüşümü yapar.
 
-    Her istemcinin en az min_samples_per_class kadar örnek alması garantilenir.
-    Bu sayede hiçbir istemci tek sınıflı veya çok az veriyle kalmaz.
+    Gerçek federatif öğrenme senaryolarında her istemcinin veri dağılımı farklıdır.
+    Örneğin bir kurumun e-posta trafiği çoğunlukla oltalama içerirken, başka bir
+    kurumunkinde temiz e-postalar baskın olabilir. alpha parametresi bu heterojenliği
+    kontrol eder: küçük alpha (0.1-0.5) yüksek heterojenlik, büyük alpha (>1) homojenliğe yaklaşır.
+
+    Args:
+        texts: Tüm metin listesi
+        labels: Tüm etiket dizisi (0/1)
+        num_clients: Toplam istemci sayısı
+        client_id: Bu istemcinin ID'si (1'den başlar)
+        alpha: Dirichlet konsantrasyon parametresi (varsayılan 0.5)
+        seed: Tekrarlanabilirlik için rastgele tohum
+
+    Returns:
+        client_texts, client_labels: Bu istemciye ait veri
     """
     np.random.seed(seed)
     labels_array = np.array(labels)
     classes = np.unique(labels_array)
 
     client_indices = []
-    min_samples_per_class = 200  # Her istemciye her sınıftan en az bu kadar örnek
 
     for cls in classes:
         cls_indices = np.where(labels_array == cls)[0]
@@ -125,11 +137,6 @@ def split_data_heterogeneous(texts, labels, num_clients, client_id, alpha=0.5, s
 
         # Dirichlet dağılımından her istemci için oran üret
         proportions = np.random.dirichlet(alpha=np.ones(num_clients) * alpha)
-
-        # Minimum örnek garantisi: her istemciye en az min_samples_per_class ver
-        min_prop = min_samples_per_class / len(cls_indices)
-        proportions = np.maximum(proportions, min_prop)
-        proportions = proportions / proportions.sum()  # tekrar normalize et
 
         # Oranları kümülatif indekslere çevir
         proportions = (np.cumsum(proportions) * len(cls_indices)).astype(int)
