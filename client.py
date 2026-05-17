@@ -31,10 +31,13 @@ class PhishingClient(fl.client.NumPyClient):
         self.total_train   = len(self.y_train)
 
         if self.is_malicious:
-            # Sadece label=1 (phishing) örnekleri 0'a çevrilir
+            # Tüm etiketler ters çevrilir (0→1, 1→0).
+            # Sadece label=1'i flip etmek, az phishing örneği olan partition'larda
+            # çok zayıf bir saldırı üretir ve tespit edilemez hale gelir.
+            # Tam flip daha güçlü bir saldırı sinyali üretir → savunma test edilebilir.
             original = self.y_train.copy()
-            self.y_train = np.where(self.y_train == 1, 0, self.y_train)
-            self.flipped_count = int(np.sum(original == 1))
+            self.y_train = 1 - self.y_train
+            self.flipped_count = int(np.sum(original != self.y_train))
             print(
                 f"[KÖTÜ NİYETLİ İSTEMCİ #{self.client_id}] Label Flipping uygulandı: "
                 f"{self.flipped_count}/{self.total_train} örnek flip edildi "

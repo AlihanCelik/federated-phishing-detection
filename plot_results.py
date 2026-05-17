@@ -22,13 +22,8 @@ def main():
     num_malicious = data.get("num_malicious", "?")
     num_rounds    = data.get("num_rounds", len(accuracies))
 
-    # Label flipping istatistikleri
+    # Label flipping istatistikleri (ham veri — acc_values hazır olduktan sonra işlenecek)
     lf = data.get("label_flipping", {})
-    total_flipped      = lf.get("total_flipped_samples", "—")
-    total_mal_rounds   = lf.get("total_malicious_rounds", "—")
-    correctly_excluded = lf.get("correctly_excluded_rounds", "—")
-    incorrectly_incl   = lf.get("incorrectly_included_rounds", "—")
-    detection_rate     = lf.get("detection_rate_pct", None)
 
     if not accuracies:
         print("HATA: Doğruluk (accuracy) verisi bulunamadı.")
@@ -40,6 +35,30 @@ def main():
     max_acc   = max(acc_values)
     avg_acc   = np.mean(acc_values)
     final_acc = acc_values[-1]
+
+    # label_flipping alanı eksikse acc_values'dan tahmin et
+    if not lf and num_malicious not in ("?", 0):
+        _total_mal_rounds = num_rounds
+        # Ortalamadan >5 puan düşük olan roundlarda savunma kaçırmış sayılır
+        _missed = sum(1 for v in acc_values if v < avg_acc - 5)
+        _correctly_excl = _total_mal_rounds - _missed
+        _detection_rate = round(_correctly_excl / _total_mal_rounds * 100, 2) if _total_mal_rounds > 0 else 0.0
+
+        lf = {
+            "total_flipped_samples":       "—",   # simülasyon verisi olmadan bilinemez
+            "total_malicious_rounds":      _total_mal_rounds,
+            "correctly_excluded_rounds":   _correctly_excl,
+            "incorrectly_included_rounds": _missed,
+            "detection_rate_pct":          _detection_rate,
+            "_estimated":                  True,
+        }
+
+    total_flipped      = lf.get("total_flipped_samples", "—")
+    total_mal_rounds   = lf.get("total_malicious_rounds", "—")
+    correctly_excluded = lf.get("correctly_excluded_rounds", "—")
+    incorrectly_incl   = lf.get("incorrectly_included_rounds", "—")
+    detection_rate     = lf.get("detection_rate_pct", None)
+    is_estimated       = lf.get("_estimated", False)
 
     # Dalgalanma tespiti: ortalamadan >15 puan sapan roundları işaretle
     volatile_rounds = [
@@ -145,6 +164,9 @@ def main():
         det_str   = "—"
         det_color = 'black'
 
+    lf_section_label = "── Label Flipping (tahmini) ──" if is_estimated else "── Label Flipping ──"
+    lf_section_sep   = "──────────────────────────" if is_estimated else "──────────────────"
+
     table_data = [
         ["Savunma Yöntemi",                 method_display],
         ["Toplam Tur",                      str(num_rounds)],
@@ -153,7 +175,7 @@ def main():
         ["En Yüksek Accuracy",              f"%{max_acc:.2f}"],
         ["Ortalama Accuracy",               f"%{avg_acc:.2f}"],
         ["Son Tur Accuracy",                f"%{final_acc:.2f}"],
-        ["── Label Flipping ──",            "──────────────────"],
+        [lf_section_label,                  lf_section_sep],
         ["Üretilen Flip'li Örnek (toplam)", str(total_flipped)],
         ["Kötü Niyetli Katılım (round)",    str(total_mal_rounds)],
         ["Doğru Eleme (round)",             str(correctly_excluded)],
