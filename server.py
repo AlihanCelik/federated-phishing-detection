@@ -367,16 +367,12 @@ class CustomRobustStrategy(FedAvg):
 
             # -- 3. FLTrust skoru (sunucu referans gradyanı) --
             # Sunucu kendi temiz verisiyle "doğru yön"ü hesaplar.
-            # Round 1'de global_weights henüz yok → FLTrust güvenilir değil, nötr bırak.
-            # Round 2'den itibaren global_weights hazır → FLTrust aktif.
+            # İstemci güncellemeleri bu referansla karşılaştırılır.
+            # Sunucu modeli/verisi yoksa nötr skor (0.5) atanır → ağırlıklandırmaya etkisi sınırlı.
             fltrust_norm = np.ones(num_clients) * 0.5
-            fltrust_active = (
-                self.server_model is not None
-                and self.server_data is not None
-                and self.global_weights is not None   # Round 1'de None
-            )
-            if fltrust_active:
-                ref_weights = self.global_weights
+            if self.server_model is not None and self.server_data is not None:
+                # Global ağırlıkları referans al — istemci ağırlıkları değil
+                ref_weights = self.global_weights if self.global_weights is not None else client_weights[0]
                 old_flat = flatten_weights(ref_weights)
                 x_server, y_server = self.server_data
 
@@ -391,6 +387,7 @@ class CustomRobustStrategy(FedAvg):
                 server_norm  = np.linalg.norm(server_delta)
 
                 if server_norm > 0:
+                    # ReLU(cos) — negatif kosinüs = ters yön = saldırgan → 0
                     raw_ts = np.zeros(num_clients)
                     for i in range(num_clients):
                         cn = np.linalg.norm(deltas[i])
@@ -398,25 +395,24 @@ class CustomRobustStrategy(FedAvg):
                             raw_ts[i] = max(0.0, float(
                                 np.dot(deltas[i], server_delta) / (cn * server_norm)
                             ))
+
+                    # Normalizasyon: max değere böl (min-max değil)
+                    # Min-max normalizasyonu sıfır TS alan istemciyi yükseltebilir.
+                    # Max'a bölme sıfırı sıfır bırakır, sıralama korunur.
                     max_ts = np.max(raw_ts)
                     fltrust_norm = raw_ts / max_ts if max_ts > 0 else np.ones(num_clients) * 0.5
+
                     print(f"  FLTrust Ham TS:             {np.round(raw_ts, 4)}")
                     print(f"  FLTrust Norm:               {np.round(fltrust_norm, 4)}")
                 else:
                     print("  [UYARI] Sunucu referans deltası sıfır, FLTrust nötr skora düşüldü.")
-            elif self.global_weights is None:
-                print("  [BİLGİ] Round 1 — global ağırlık yok, FLTrust bu round nötr (0.5).")
             else:
                 print("  [BİLGİ] Sunucu modeli/verisi yok, FLTrust bileşeni nötr (0.5).")
 
-            # -- 4. Anlık hibrit skor --
-            # FLTrust aktif değilse (Round 1) Krum+Kosinüs ağırlıklarını yeniden dengele
-            if fltrust_active:
-                # Krum %25 + Kosinüs %35 + FLTrust %40
-                instant_scores = 0.25 * krum_norm + 0.35 * cos_norm + 0.40 * fltrust_norm
-            else:
-                # FLTrust yok → Krum %40 + Kosinüs %60
-                instant_scores = 0.40 * krum_norm + 0.60 * cos_norm
+            # -- 4. Anlık hibrit skor: Krum %25 + Kosinüs %35 + FLTrust %40 --
+            # FLTrust en güvenilir sinyal (sunucu referansı) → en yüksek ağırlık.
+            # Sunucu verisi yoksa Krum+Kosinüs ağırlıkları devreye girer.
+            instant_scores = 0.25 * krum_norm + 0.35 * cos_norm + 0.40 * fltrust_norm
 
             # -- 5. EMA güncelle --
             for i, cid in enumerate(round_client_ids):
