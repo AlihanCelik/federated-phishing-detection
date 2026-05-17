@@ -371,6 +371,7 @@ class CustomRobustStrategy(FedAvg):
             # Sunucu modeli/verisi yoksa nötr skor (0.5) atanır → ağırlıklandırmaya etkisi sınırlı.
             fltrust_norm = np.ones(num_clients) * 0.5
             if self.server_model is not None and self.server_data is not None:
+                # Global ağırlıkları referans al — istemci ağırlıkları değil
                 ref_weights = self.global_weights if self.global_weights is not None else client_weights[0]
                 old_flat = flatten_weights(ref_weights)
                 x_server, y_server = self.server_data
@@ -386,6 +387,7 @@ class CustomRobustStrategy(FedAvg):
                 server_norm  = np.linalg.norm(server_delta)
 
                 if server_norm > 0:
+                    # ReLU(cos) — negatif kosinüs = ters yön = saldırgan → 0
                     raw_ts = np.zeros(num_clients)
                     for i in range(num_clients):
                         cn = np.linalg.norm(deltas[i])
@@ -393,11 +395,13 @@ class CustomRobustStrategy(FedAvg):
                             raw_ts[i] = max(0.0, float(
                                 np.dot(deltas[i], server_delta) / (cn * server_norm)
                             ))
-                    min_ts, max_ts = np.min(raw_ts), np.max(raw_ts)
-                    fltrust_norm = (
-                        np.ones(num_clients) * 0.5 if max_ts == min_ts
-                        else (raw_ts - min_ts) / (max_ts - min_ts)
-                    )
+
+                    # Normalizasyon: max değere böl (min-max değil)
+                    # Min-max normalizasyonu sıfır TS alan istemciyi yükseltebilir.
+                    # Max'a bölme sıfırı sıfır bırakır, sıralama korunur.
+                    max_ts = np.max(raw_ts)
+                    fltrust_norm = raw_ts / max_ts if max_ts > 0 else np.ones(num_clients) * 0.5
+
                     print(f"  FLTrust Ham TS:             {np.round(raw_ts, 4)}")
                     print(f"  FLTrust Norm:               {np.round(fltrust_norm, 4)}")
                 else:
